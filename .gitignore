@@ -1,5 +1,6 @@
 *.bat
 quantum_decomp.py
 __pycache__
+local
 .ipynb_checkpoints
 
