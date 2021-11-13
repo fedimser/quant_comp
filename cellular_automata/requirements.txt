@@ -1,0 +1,3 @@
+cirq
+numba
+numpy
