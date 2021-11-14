@@ -7,8 +7,8 @@ import cirq
 
 
 class BorderCondition(Enum):
-    FIXED = 0
-    PERIODIC = 1
+    FIXED = 0     # Assume zeros outside the array.
+    PERIODIC = 1  # Assume that leftmost and rightmost cell are neighbors.
 
 
 @numba.jit("u8(u8,u8)")
@@ -70,21 +70,21 @@ class ECA:
         row1[n - 1] = _get_bit(self.rule, 4 * row0[n - 2] + 2 * row0[n - 1] + self.p * row0[0])
         return row1
 
-    def simulate_n_steps(self, row0, steps):
+    def simulate_n_steps(self, row, steps):
+        for _ in range(steps):
+            row = self.step(row)
+        return row
+
+    def visualize(self, row0, steps):
         """Simulates n steps of ECA.
 
         Returns matrix with all intermediary configurations.
         """
-        rows = np.zeros((steps, len(row0)), dtype=np.int8)
+        rows = np.zeros((steps + 1, len(row0)), dtype=np.int8)
         rows[0, :] = row0
-        for i in range(1, steps):
+        for i in range(1, steps + 1):
             rows[i, :] = self.step(rows[i - 1, :])
         return rows
-
-    def simulate_single_cell(self, size=50):
-        row0 = np.zeros(2 * size + 1, np.int8)
-        row0[size] = 1
-        return self.simulate_n_steps(row0, size)
 
     def get_explicit_state_transitions(self, n):
         """Computates 1-step transitions for all possible initial states.
@@ -113,7 +113,7 @@ def _right_shift(qubits):
 
 def circuit_for_eca(ca: ECA, qubits):
     """Implements circuit equivalent to one step of given Elementary Cellular Automaton."""
-    assert ca.rule >= 0 and ca.rule <= 255, "Invalid rule."
+    assert 0 <= ca.rule <= 255, "Invalid rule."
     n = len(qubits)
     assert n >= 3, "Too few qubits."
     circuit = cirq.Circuit()
