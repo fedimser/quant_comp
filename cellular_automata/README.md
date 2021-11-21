@@ -35,6 +35,12 @@ rules and we can efficinelty build a circuit for all of them.
 
 * [ECA pictures](eca_pictures.ipynb) - This notebook visualizes all 22 reversible ECAs.
 
+### Paper
+
+Results of this project are summarized in my paper 
+"Quantum Circuits for Elementary Cellular Automata",
+available [here](http://dx.doi.org/10.13140/RG.2.2.22346.08641).
+
 ### License
 
 All files in this directory are licenced under MIT license, as well as rest of the repository. Please refer to LICENSE
