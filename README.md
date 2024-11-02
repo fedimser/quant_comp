@@ -11,6 +11,6 @@ List of projects:
   * [Schmidt decomposition of a 4x4 matrix](Schmidt%20decomposition%20of%204x4%20matrix.ipynb) (2019)
 * [2D Hidden Linear Function](2D%20Hidden%20Linear%20Function.ipynb) (2020)
 * [All 1-qubit Clifford gates](All%201-qubit%20CLifford%20gates.ipynb) (2020) 
-* [Simple Simulator](SimpleSimulator.ipynb) (2021)
 * [Multi-controlled gate decomposition](mc_gate_decomposition/Multi-controlled%20gate%20decomposition.ipynb) (2020)
+* [Simple Simulator](SimpleSimulator.ipynb) (2021)
 * [Quantum Elementary Cellular Automata](cellular_automata/README.md) (2021)
