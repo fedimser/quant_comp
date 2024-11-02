@@ -88,7 +88,7 @@ def _verify_by_simulation(eca, N, sim, steps=5):
         circuit += cirq.measure(qubits[i])
 
     measurements = sim.simulate(circuit).measurements
-    quantum_end_state = np.array([measurements[str(i)][0] for i in range(N)])
+    quantum_end_state = np.array([measurements[f"q({i})"][0] for i in range(N)])
     assert np.allclose(end_state, quantum_end_state)
 
 

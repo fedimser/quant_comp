@@ -4,4 +4,5 @@ __pycache__
 local
 .ipynb_checkpoints
 .idea
+.pytest_cache
 obj
