@@ -12,5 +12,6 @@ List of projects:
 * [2D Hidden Linear Function](2D%20Hidden%20Linear%20Function.ipynb) (2020)
 * [All 1-qubit Clifford gates](All%201-qubit%20CLifford%20gates.ipynb) (2020) 
 * [Multi-controlled gate decomposition](mc_gate_decomposition/Multi-controlled%20gate%20decomposition.ipynb) (2020)
-* [Simple Simulator](SimpleSimulator.ipynb) (2021)
+* [Quantum Circuit Simulator From Scratch](SimpleSimulator.ipynb) (2021)
 * [Quantum Elementary Cellular Automata](cellular_automata/README.md) (2021)
+* [Quantum Arithmetic](arithmetic/README.md) (2024)
