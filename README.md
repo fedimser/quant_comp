@@ -14,4 +14,5 @@ List of projects:
 * [Multi-controlled gate decomposition](mc_gate_decomposition/Multi-controlled%20gate%20decomposition.ipynb) (2020)
 * [Quantum Circuit Simulator From Scratch](SimpleSimulator.ipynb) (2021)
 * [Quantum Elementary Cellular Automata](cellular_automata/README.md) (2021)
-* [Quantum Arithmetic](arithmetic/) (2024)
+* [Screening Task for QOSF Mentorship Program](Screening%20Task%20for%20QOSF%20Mentorship%20Program.ipynb) (2024)
+* [Quantum Arithmetic](arithmetic/) (2024-2025)
