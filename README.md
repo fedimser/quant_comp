@@ -16,3 +16,7 @@ List of projects:
 * [Quantum Elementary Cellular Automata](cellular_automata/README.md) (2021)
 * [Screening Task for QOSF Mentorship Program](Screening%20Task%20for%20QOSF%20Mentorship%20Program.ipynb) (2024)
 * [Quantum Arithmetic](arithmetic/) (2024-2025)
+
+Larger projects outside of this repository:
+* [quantum_decomp](https://github.com/fedimser/quantum_decomp) (2019) - converts unitary matrix to Qiskit/Cirq/Q# cirquit.
+* [quant-arith-re](https://github.com/fedimser/quant-arith-re) (2024-2025) - Quantum Arithmetic Algorithms and Resource Estimation.
