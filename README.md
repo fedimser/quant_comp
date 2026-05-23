@@ -14,11 +14,13 @@ List of projects:
 * [Multi-controlled gate decomposition](mc_gate_decomposition/Multi-controlled%20gate%20decomposition.ipynb) (2020)
 * [Quantum Circuit Simulator From Scratch](SimpleSimulator.ipynb) (2021)
 * [Quantum Elementary Cellular Automata](cellular_automata/README.md) (2021)
-* [Screening Task for QOSF Mentorship Program](Screening%20Task%20for%20QOSF%20Mentorship%20Program.ipynb) (2024)
+* [Screening Task for QOSF Mentorship Program](qosf_tasks/2024-state-preparation/Screening%20Task%20for%20QOSF%20Mentorship%20Program.ipynb) (2024)
 * [Quantum Arithmetic](arithmetic/) (2024-2025)
 * [Quantum Lookups](quantum_lookups/Quantum%20Lookups.ipynb) (2025)
+* [Screening Task for QOSF Mentorship Program](qosf_tasks/2025-gate-tomography/Gate%20Tomography.ipynb) (2025)
+
 
 Larger projects outside of this repository:
 * [quantum_decomp](https://github.com/fedimser/quantum_decomp) (2019) - converts unitary matrix to Qiskit/Cirq/Q# cirquit.
 * [quant-arith-re](https://github.com/fedimser/quant-arith-re) (2024-2025) - Quantum Arithmetic Algorithms and Resource Estimation.
-* [qmath](https://github.com/fedimser/qmath) (2025-2026) - Library of mathematical functions for quantum computers, implemeted using PsiQuantum's Workbench.
+* [qmath](https://github.com/fedimser/qmath) (2025-2026) - library of mathematical functions for quantum computers, implemeted using PsiQuantum's Workbench, with resource estimation.
