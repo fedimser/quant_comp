@@ -24,3 +24,4 @@ Larger projects outside of this repository:
 * [quantum_decomp](https://github.com/fedimser/quantum_decomp) (2019) - converts unitary matrix to Qiskit/Cirq/Q# cirquit.
 * [quant-arith-re](https://github.com/fedimser/quant-arith-re) (2024-2025) - Quantum Arithmetic Algorithms and Resource Estimation.
 * [qmath](https://github.com/fedimser/qmath) (2025-2026) - library of mathematical functions for quantum computers, implemeted using PsiQuantum's Workbench, with resource estimation.
+* [vericirq](https://github.com/fedimser/vericirq) (2026) - library for formal verification of quantum circuits.
