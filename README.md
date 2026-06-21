@@ -18,6 +18,7 @@ List of projects:
 * [Quantum Arithmetic](arithmetic/) (2024-2025)
 * [Quantum Lookups](quantum_lookups/Quantum%20Lookups.ipynb) (2025)
 * [Screening Task for QOSF Mentorship Program](qosf_tasks/2025-gate-tomography/Gate%20Tomography.ipynb) (2025)
+* [Formal verification of Q# circuits](qsharp-verification/formal-verification-qsharp.ipynb) (2026)
 
 
 Larger projects outside of this repository:
