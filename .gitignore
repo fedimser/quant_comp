@@ -6,3 +6,4 @@ local
 .idea
 .pytest_cache
 obj
+.venv
