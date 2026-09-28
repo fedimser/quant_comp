@@ -7,3 +7,4 @@ local
 .pytest_cache
 obj
 .venv
+.vscode
