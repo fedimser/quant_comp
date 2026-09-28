@@ -29,6 +29,7 @@ from typing import Any, Self
 import cirq
 import numpy as np
 import sympy
+from cirq.sim.simulator import check_all_resolved
 
 _AMPLITUDE_EPS = 1e-9
 
@@ -563,7 +564,6 @@ class SparseSimulator(
     ``run(circuit, repetitions=n)`` executes independent shots starting in zero.
     ``simulate`` and ``simulate_moment_steps`` expose final and intermediate
     states, with integer initial states interpreted in Cirq's qubit order.
-    Nonempty parameter resolvers are not supported.
 
     ``basis_states``, ``amplitudes``, and ``measurement_results`` describe the
     latest shot. Register reads and measurement_results are little-endian;
@@ -664,25 +664,6 @@ class SparseSimulator(
                 self.qubit_manager._copy_allocation_from(self._state.qubit_manager)
             yield self._create_step_result(state)
 
-    @staticmethod
-    def _check_parameters(
-        param_resolver: cirq.ParamResolverOrSimilarType,
-    ) -> None:
-        if cirq.ParamResolver(param_resolver):
-            raise NotImplementedError("Parameter resolvers are not supported")
-
-    def simulate_moment_steps(
-        self,
-        circuit: cirq.AbstractCircuit,
-        param_resolver: cirq.ParamResolverOrSimilarType = None,
-        qubit_order: cirq.QubitOrderOrList = cirq.QubitOrder.DEFAULT,
-        initial_state: Any = None,
-    ) -> Iterator[SparseSimulatorStep]:
-        self._check_parameters(param_resolver)
-        return super().simulate_moment_steps(
-            circuit, param_resolver, qubit_order, initial_state
-        )
-
     def simulate_sweep_iter(
         self,
         program: cirq.AbstractCircuit,
@@ -692,7 +673,7 @@ class SparseSimulator(
     ) -> Iterator[SparseSimulatorTrialResult]:
         resolvers = list(cirq.to_resolvers(params))
         for resolver in resolvers:
-            self._check_parameters(resolver)
+            check_all_resolved(cirq.resolve_parameters(program, resolver))
         return super().simulate_sweep_iter(
             program, resolvers, qubit_order, initial_state
         )
@@ -715,7 +696,8 @@ class SparseSimulator(
         param_resolver: cirq.ParamResolver,
         repetitions: int,
     ) -> dict[str, np.ndarray]:
-        self._check_parameters(param_resolver)
+        circuit = cirq.resolve_parameters(circuit, param_resolver)
+        check_all_resolved(circuit)
         repetitions = operator.index(repetitions)
         if repetitions < 0:
             raise ValueError("repetitions must be non-negative")

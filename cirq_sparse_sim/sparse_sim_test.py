@@ -1017,8 +1017,6 @@ class _UnsupportedGate(cirq.Gate):
         _UnsupportedGate(),
         cirq.depolarize(0.1),
         cirq.amplitude_damp(0.1),
-        cirq.X ** sympy.Symbol("theta"),
-        cirq.CZ ** sympy.Symbol("theta"),
     ],
     ids=repr,
 )
@@ -1444,26 +1442,22 @@ def test_empty_parameter_resolvers_are_accepted(method: str, resolver) -> None:
     assert np.all(result.measurements["m"])
 
 
-@pytest.mark.parametrize(
-    "method",
-    ["run", "simulate", "simulate_moment_steps", "run_sweep", "simulate_sweep"],
-)
-@pytest.mark.parametrize(
-    "resolver", [{"theta": 0.5}, cirq.ParamResolver({"theta": 0.5})]
-)
-def test_nonempty_parameter_resolvers_are_rejected(method: str, resolver) -> None:
+def test_parameter_sweeps_resolve_gates() -> None:
     simulator = SparseSimulator()
     qubits = simulator.qubit_manager.qalloc(1)
     circuit = cirq.Circuit(
         (cirq.X ** sympy.Symbol("theta"))(*qubits),
         cirq.measure(*qubits, key="m"),
     )
-    parameter = "params" if "sweep" in method else "param_resolver"
+    params = [{"theta": 0}, {"theta": 1}]
 
-    with pytest.raises(NotImplementedError, match="Parameter resolvers"):
-        result = getattr(simulator, method)(circuit, **{parameter: resolver})
-        if method == "simulate_moment_steps":
-            list(result)
+    run_results = simulator.run_sweep(circuit, params=params, repetitions=2)
+    simulation_results = simulator.simulate_sweep(circuit, params=params)
+
+    np.testing.assert_array_equal(run_results[0].measurements["m"], [[0], [0]])
+    np.testing.assert_array_equal(run_results[1].measurements["m"], [[1], [1]])
+    np.testing.assert_array_equal(simulation_results[0].measurements["m"], [0])
+    np.testing.assert_array_equal(simulation_results[1].measurements["m"], [1])
 
 
 @pytest.mark.parametrize("initial_state", [-1, 4])
@@ -1566,14 +1560,18 @@ def test_partial_state_rejects_unsupported_channel_records() -> None:
 
 
 @pytest.mark.parametrize("method", ["run", "simulate"])
-def test_rejected_parameters_do_not_clear_previous_state(method: str) -> None:
+def test_unresolved_parameters_do_not_clear_previous_state(method: str) -> None:
     simulator = SparseSimulator()
     qubits = simulator.qubit_manager.qalloc(1)
     circuit = cirq.Circuit(cirq.X(*qubits), cirq.measure(*qubits, key="m"))
     simulator.run(circuit)
+    parameterized_circuit = cirq.Circuit(
+        (cirq.X ** sympy.Symbol("theta"))(*qubits),
+        cirq.measure(*qubits, key="m"),
+    )
 
-    with pytest.raises(NotImplementedError, match="Parameter resolvers"):
-        getattr(simulator, method)(circuit, param_resolver={"unused": 1})
+    with pytest.raises(ValueError, match="symbols were not specified"):
+        getattr(simulator, method)(parameterized_circuit)
 
     assert simulator.basis_states == [1]
     assert simulator.measurement_results == {"m": 1}
