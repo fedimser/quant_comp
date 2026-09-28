@@ -355,7 +355,7 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
     ) -> None:
         """Sample and apply one unitary from a state-independent mixture."""
         probabilities = [float(probability) for probability, _ in mixture]
-        index = int(self._random_choice(probabilities))
+        index = self._random_choice(probabilities)
         selected_matrix = mixture[index][1]
 
         states, amplitudes = self._apply_matrix(np.asarray(selected_matrix), qubit_ids)
