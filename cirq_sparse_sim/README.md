@@ -21,7 +21,7 @@ import cirq
 from cirq_sparse_sim.sparse_sim import SparseSimulator
 
 simulator = SparseSimulator(seed=42)
-q0, q1 = simulator.qubit_manager.qalloc(2)
+q0, q1 = cirq.NamedQubit.range(2, prefix="q")
 circuit = cirq.Circuit(cirq.H(q0), cirq.CNOT(q0, q1), cirq.measure(q0, q1, key="m"))
 
 samples = simulator.run(circuit, repetitions=100).measurements["m"]  # (100, 2)
@@ -38,13 +38,14 @@ the last shot. Accessing a result's state vector explicitly materializes a dense
 array; simulation itself remains sparse. Step-result sampling does not collapse
 or otherwise change the saved state.
 
-Qubits must still be allocated through `qubit_manager`. Nonempty parameter
-resolvers and non-integer initial states are not supported. Integer initial
-states and returned wavefunctions use Cirq's big-endian `qubit_order`;
-`read_register` and sparse basis indices retain their little-endian convention.
-For backwards compatibility, `run` accepts circuits without measurements and
-returns only the last occurrence of each measurement key in each shot, rather
-than all repeated-key records.
+Circuits may use arbitrary dimension-2 Cirq Qids; `qubit_manager` remains
+available for backwards compatibility and decomposition ancillas. Integer
+initial states and returned wavefunctions use Cirq's big-endian `qubit_order`.
+`read_register` is little-endian in the supplied register order, while sparse
+basis-state bit positions use the simulation's compact internal qubit mapping.
+Parameter resolvers and repeated measurement-key records follow Cirq's normal
+contracts. Non-integer initial states are not supported. For backwards
+compatibility, `run` accepts circuits without measurements.
 
 ## Tests
 

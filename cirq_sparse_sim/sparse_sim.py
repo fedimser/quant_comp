@@ -69,10 +69,23 @@ class SparseSimQubitManager(cirq.QubitManager):
         self.free_qubits: list[int] = []
         self.free_qubits_set: set[int] = set()
 
-    def _allocate_qubit(self) -> cirq.LineQubit:
+    def _qid_for_id(self, qubit_id: int) -> cirq.Qid:
+        if isinstance(self.simulator, _SparseState):
+            return cirq.ops.CleanQubit(qubit_id, prefix="_sparse_sim")
+        return cirq.LineQubit(qubit_id)
+
+    @staticmethod
+    def _qubit_id(qubit: cirq.Qid) -> int:
+        if isinstance(qubit, cirq.LineQubit):
+            return qubit.x
+        if isinstance(qubit, cirq.ops.CleanQubit):
+            return qubit.id
+        raise AssertionError(f"Qubit {qubit} was not allocated by this manager")
+
+    def _allocate_qubit(self) -> cirq.Qid:
         for index in range(len(self.free_qubits) - 1, -1, -1):
             qubit_id = self.free_qubits[index]
-            qubit = cirq.LineQubit(qubit_id)
+            qubit = self._qid_for_id(qubit_id)
             if not self.simulator._has_qubit(qubit):
                 del self.free_qubits[index]
                 self.free_qubits_set.remove(qubit_id)
@@ -81,7 +94,7 @@ class SparseSimQubitManager(cirq.QubitManager):
         while True:
             qubit_id = self.num_qubits
             self.num_qubits += 1
-            qubit = cirq.LineQubit(qubit_id)
+            qubit = self._qid_for_id(qubit_id)
             if not self.simulator._has_qubit(qubit):
                 return qubit
             self.free_qubits.append(qubit_id)
@@ -102,15 +115,17 @@ class SparseSimQubitManager(cirq.QubitManager):
     def qfree(self, qubits: Iterable[cirq.Qid]) -> None:
         """Free qubits."""
         for q in qubits:
-            assert isinstance(q, cirq.LineQubit)
-            assert 0 <= q.x < self.num_qubits
-            if q.x in self.free_qubits_set:
-                raise RuntimeError(f"Qubit {q.x} released twice")
+            qubit_id = self._qubit_id(q)
+            assert 0 <= qubit_id < self.num_qubits
+            if qubit_id in self.free_qubits_set:
+                raise RuntimeError(f"Qubit {qubit_id} released twice")
+            if not self.simulator._has_qubit(q):
+                raise RuntimeError(f"Qubit {q} is not in the simulation state")
             if not self.simulator._is_qubit_zero(q):
-                raise RuntimeError(f"Qubit {q.x} released not in zero state")
+                raise RuntimeError(f"Qubit {qubit_id} released not in zero state")
             self.simulator._remove_qubit(q)
-            self.free_qubits.append(q.x)
-            self.free_qubits_set.add(q.x)
+            self.free_qubits.append(qubit_id)
+            self.free_qubits_set.add(qubit_id)
 
     def num_allocated_qubits(self) -> int:
         """Returns number of allocated qubits."""
@@ -524,6 +539,9 @@ class _SparseSimulationState(cirq.SimulationState[_SparseState]):
         return self._state
 
     def get_axes(self, qubits: Sequence[cirq.Qid]) -> list[int]:
+        for qubit in qubits:
+            if qubit not in self.qubit_map:
+                raise ValueError(f"Qubit {qubit} is not in this simulation state")
         try:
             return [self._state.axis_by_qubit[qubit] for qubit in qubits]
         except KeyError as ex:
