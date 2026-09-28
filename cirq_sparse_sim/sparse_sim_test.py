@@ -161,6 +161,40 @@ def test_single_qubit_unitaries(initial: int, gate: cirq.Gate) -> None:
     )
 
 
+def test_eight_qubit_qft_and_inverse() -> None:
+    num_qubits = 8
+    basis_index = int(np.random.default_rng(0).integers(1 << num_qubits))
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(num_qubits)
+    qft = cirq.QuantumFourierTransformGate(num_qubits)
+    qft_operation = qft(*qubits)
+
+    transformed = simulator.simulate(
+        cirq.Circuit(qft_operation),
+        qubit_order=qubits,
+        initial_state=basis_index,
+    )
+
+    np.testing.assert_allclose(
+        transformed.final_state_vector,
+        cirq.unitary(qft)[basis_index],
+        rtol=0,
+        atol=1e-9,
+    )
+
+    round_trip = simulator.simulate(
+        cirq.Circuit(qft_operation, cirq.inverse(qft_operation)),
+        qubit_order=qubits,
+    )
+
+    np.testing.assert_allclose(
+        round_trip.final_state_vector,
+        np.eye(1 << num_qubits)[0],
+        rtol=0,
+        atol=1e-9,
+    )
+
+
 @pytest.mark.parametrize(
     "gate",
     [
