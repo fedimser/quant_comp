@@ -1,4 +1,4 @@
-"""Sparse, single-shot simulator for a restricted subset of Cirq circuits.
+"""Sparse SimulatorBase implementation for a restricted subset of Cirq circuits.
 
 The simulator keeps the quantum state as a sparse list of computational basis
 states and their amplitudes instead of a dense state vector. This is efficient
@@ -10,15 +10,21 @@ Execution model:
 1. Start in ``|0...0>`` represented as one basis state with amplitude ``1``.
 2. Apply operations one by one, updating sparse basis states/amplitudes.
 3. Measurements collapse the sparse state stochastically according to Born rule.
-4. Return a single-shot ``cirq.ResultDict``.
+4. Repeat from the initial state for each requested shot.
 
 This simulator is intentionally limited and aimed at tests and debugging.
 Unsupported operations raise ``ValueError``.
 """
 
+from __future__ import annotations
+
+import copy
 import math
+import operator
 import random
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from types import NotImplementedType
+from typing import Any, Self
 
 import cirq
 import numpy as np
@@ -55,7 +61,7 @@ class SparseSimArithmeticGate(cirq.Gate):
 class SparseSimQubitManager(cirq.QubitManager):
     """Simple qubit manager with allocation/release over ``LineQubit`` indices."""
 
-    def __init__(self, simulator: "SparseSimulator") -> None:
+    def __init__(self, simulator: SparseSimulator | _SparseState) -> None:
         """Initialize the simulator."""
         self.simulator = simulator
         self.num_qubits = 0
@@ -96,6 +102,11 @@ class SparseSimQubitManager(cirq.QubitManager):
         """Returns number of allocated qubits."""
         return self.num_qubits - len(self.free_qubits)
 
+    def _copy_allocation_from(self, other: SparseSimQubitManager) -> None:
+        self.num_qubits = other.num_qubits
+        self.free_qubits = other.free_qubits.copy()
+        self.free_qubits_set = other.free_qubits_set.copy()
+
 
 def _apply_cx(state: int, control_bit: int, target_bit: int) -> int:
     if (state >> control_bit) % 2 == 1:
@@ -120,44 +131,15 @@ def _normalize(amplitudes: list[complex]) -> list[complex]:
     return [a / norm for a in amplitudes]
 
 
-class SparseSimulator:
-    """Sparse simulator for a restricted set of Cirq operations.
+class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReader):
+    """The sparse execution engine and its classical measurement history."""
 
-    Supported operations include:
-      - ``X``, ``CNOT``, ``CCNOT`` (basis permutation).
-      - ``CZPowGate`` with numeric exponent (phase on ``|11>`` branch).
-      - ``SparseSimArithmeticGate``.
-      - ``MeasurementGate`` and ``ResetChannel``.
-      - ``ClassicallyControlledOperation`` with ``KeyCondition`` or ``SympyCondition``.
-      - Any single-qubit gate with known unitary.
-
-    Other operations are attempted via one-step decomposition and processed
-    recursively. If an operation still cannot be handled, simulation fails.
-
-    Usage:
-      - Create a simulator instance: ``sim = SparseSimulator()``.
-      - Allocate qubits using ``sim.qubit_manager.qalloc``. Qubits created in any other
-        way are not supported.
-      - Create a circuit.
-      - Call ``sim.run(circuit)``.
-      - Use ``sim.read_register`` to read the value stored in a given register,
-        interpreted as an unsigned little-endian integer.
-      - Inspect measurement results in the ``cirq.Result`` object returned by
-        ``sim.run``.
-
-    Notes:
-      - ``run`` is single-shot only.
-      - ``measurement_results`` stores the latest integer value per measurement key.
-        These values are little-endian; classical conditions use Cirq's big-endian
-        integers and measurement occurrence indices.
-      - ``read_register`` requires the final state to be a single basis state.
-        If it's not the case, add measurements.
-
-    """
-
-    def __init__(self, seed: int | None = None) -> None:
-        """Initialize SparseSimulator."""
-        self.random = random.Random(seed)
+    def __init__(
+        self,
+        random_source: random.Random,
+        classical_data: cirq.ClassicalDataStoreReader | None = None,
+    ) -> None:
+        self.random: random.Random | np.random.RandomState = random_source
         self.qubit_manager = SparseSimQubitManager(self)
 
         # Sparse state is represented by a list of basis states with
@@ -171,6 +153,23 @@ class SparseSimulator:
 
         # Length of measurements (to restore measurements as bit vectors).
         self._meas_len: dict[str, int] = {}
+        self._records: dict[cirq.MeasurementKey, list[tuple[int, ...]]] = {}
+        if classical_data is not None:
+            if classical_data.channel_records:
+                raise NotImplementedError(
+                    "Channel measurement records are not supported"
+                )
+            for key, records in classical_data.records.items():
+                self._records[key] = list(records)
+                if records:
+                    name = str(key)
+                    self._measurement_history[name] = [
+                        cirq.big_endian_bits_to_int(bits) for bits in records
+                    ]
+                    self._meas_len[name] = len(records[-1])
+                    self.measurement_results[name] = sum(
+                        bit << i for i, bit in enumerate(records[-1])
+                    )
 
     def _apply_x(self, qid: int) -> None:
         self.basis_states = [s ^ (1 << qid) for s in self.basis_states]
@@ -313,6 +312,9 @@ class SparseSimulator:
         self._measurement_history.setdefault(key, []).append(
             cirq.big_endian_bits_to_int(measured_bits)
         )
+        self._records.setdefault(cirq.MeasurementKey.parse_serialized(key), []).append(
+            tuple(measured_bits)
+        )
 
     def _apply_reset(self, target_qubit: int) -> None:
         """Reset one qubit to ``|0>`` via measure-and-conditional-flip."""
@@ -398,39 +400,347 @@ class SparseSimulator:
 
         raise ValueError(f"Operation cannot be simulated: {op}.")
 
-    def run(self, circuit: cirq.Circuit) -> cirq.Result:
-        """Run ``circuit`` once and return ``cirq.ResultDict``.
-
-        Returned ``measurements[key]`` is a boolean array with shape
-        ``(1, num_measured_qubits_for_key)``.
-        """
-        self.basis_states = [0]
-        self.amplitudes = [1.0 + 0.0j]
-        self.measurement_results = {}
-        self._measurement_history = {}
-        self._meas_len = {}
-        # Circuit must use only qubits allocated using qubit manager of this simulator.
-        context = cirq.DecompositionContext(self.qubit_manager)
-        for op in circuit.all_operations():
-            self._run_op(op, context)
-
-        measurements = {
-            key: np.asarray(
-                [[((value >> i) & 1) == 1 for i in range(self._meas_len[key])]],
-                dtype=np.bool_,
-            )
-            for key, value in self.measurement_results.items()
-        }
-        return cirq.ResultDict(params=cirq.ParamResolver({}), measurements=measurements)
-
     def read_register(self, register: Sequence[cirq.Qid]) -> int:
         """Read a little-endian register as an integer."""
-        assert len(self.basis_states) == 1, (
-            "Final state is superposition, add measurements."
-        )
+        assert (
+            len(self.basis_states) == 1
+        ), "Final state is superposition, add measurements."
         s = self.basis_states[0]
         return sum(((s >> q.x) & 1) << i for i, q in enumerate(register))
 
     def _is_qubit_zero(self, qid: int) -> bool:
         """Checks whether qubit is in 0 state."""
         return all((s >> qid) & 1 == 0 for s in self.basis_states)
+
+    def copy(self, deep_copy_buffers: bool = True) -> Self:
+        """Copy the state; there are no reusable scratch buffers to share."""
+        result = copy.copy(self)
+        result.basis_states = self.basis_states.copy()
+        result.amplitudes = self.amplitudes.copy()
+        result.measurement_results = self.measurement_results.copy()
+        result._measurement_history = {
+            key: values.copy() for key, values in self._measurement_history.items()
+        }
+        result._meas_len = self._meas_len.copy()
+        result._records = {key: values.copy() for key, values in self._records.items()}
+        result.qubit_manager = SparseSimQubitManager(result)
+        result.qubit_manager._copy_allocation_from(self.qubit_manager)
+        return result
+
+    def measure(
+        self, axes: Sequence[int], seed: cirq.RANDOM_STATE_OR_SEED_LIKE = None
+    ) -> list[int]:
+        if seed is not None:
+            self.random = cirq.value.parse_random_state(seed)
+        return [self._measure_qubit(axis) for axis in axes]
+
+    def sample(
+        self,
+        axes: Sequence[int],
+        repetitions: int = 1,
+        seed: cirq.RANDOM_STATE_OR_SEED_LIKE = None,
+    ) -> np.ndarray:
+        repetitions = operator.index(repetitions)
+        if repetitions < 0:
+            raise ValueError("repetitions must be non-negative")
+        return super().sample(axes, repetitions, seed).reshape(repetitions, len(axes))
+
+    @property
+    def records(self) -> Mapping[cirq.MeasurementKey, list[tuple[int, ...]]]:
+        return self._records
+
+    @property
+    def channel_records(self) -> Mapping[cirq.MeasurementKey, list[int]]:
+        return {}
+
+    def keys(self) -> tuple[cirq.MeasurementKey, ...]:
+        return tuple(self._records)
+
+    def get_digits(self, key: cirq.MeasurementKey, index: int = -1) -> tuple[int, ...]:
+        return self._records[key][index]
+
+    def get_int(self, key: cirq.MeasurementKey, index: int = -1) -> int:
+        return cirq.big_endian_bits_to_int(self.get_digits(key, index))
+
+
+class _SparseSimulationState(cirq.SimulationState[_SparseState]):
+    """Cirq's simulation-state interface over the existing sparse engine."""
+
+    @property
+    def sparse_state(self) -> _SparseState:
+        return self._state
+
+    @property
+    def classical_data(self) -> cirq.ClassicalDataStoreReader:
+        return self._state
+
+    def get_axes(self, qubits: Sequence[cirq.Qid]) -> list[int]:
+        axes = []
+        for qubit in qubits:
+            if qubit not in self.qubit_map:
+                raise ValueError(f"Qubit {qubit} is not in this simulation state")
+            if not isinstance(qubit, cirq.LineQubit):
+                raise ValueError("Only LineQubits are supported")
+            axes.append(qubit.x)
+        return axes
+
+    def apply_operation(self, op: cirq.Operation) -> None:
+        self.get_axes(op.qubits)
+        self._state._run_op(op, cirq.DecompositionContext(self._state.qubit_manager))
+
+    def _act_on_fallback_(
+        self, action: Any, qubits: Sequence[cirq.Qid], allow_decompose: bool = True
+    ) -> bool | NotImplementedType:
+        if isinstance(action, cirq.Gate):
+            action = action.on(*qubits)
+        if not isinstance(action, cirq.Operation):
+            return NotImplemented
+        self.apply_operation(action)
+        return True
+
+    def measure(
+        self,
+        qubits: Sequence[cirq.Qid],
+        key: str,
+        invert_mask: Sequence[bool],
+        confusion_map: dict[tuple[int, ...], np.ndarray],
+    ) -> None:
+        self.apply_operation(
+            cirq.measure(
+                *qubits,
+                key=key,
+                invert_mask=tuple(invert_mask),
+                confusion_map=confusion_map,
+            )
+        )
+
+    def state_vector(self) -> np.ndarray:
+        axes = self.get_axes(self.qubits)
+        vector = np.zeros(1 << len(axes), dtype=np.complex128)
+        included_bits = sum(1 << axis for axis in axes)
+        for basis, amplitude in zip(
+            self._state.basis_states, self._state.amplitudes, strict=True
+        ):
+            if basis & ~included_bits:
+                raise ValueError("An omitted qubit is not in the zero state")
+            index = 0
+            for axis in axes:
+                index = (index << 1) | ((basis >> axis) & 1)
+            vector[index] = amplitude
+        return vector
+
+
+class SparseSimulatorStep(cirq.StepResultBase[_SparseSimulationState]):
+    """A snapshot after a moment, with non-collapsing sampling support."""
+
+    def state_vector(self, copy: bool = True) -> np.ndarray:
+        """Materialize the sparse state in the simulation's qubit order."""
+        return self._merged_sim_state.state_vector()
+
+
+class SparseSimulatorTrialResult(
+    cirq.SimulationTrialResultBase[_SparseSimulationState]
+):
+    """Final sparse simulation state, materialized as a vector only on request."""
+
+    @property
+    def final_state_vector(self) -> np.ndarray:
+        return self._get_merged_sim_state().state_vector()
+
+
+class SparseSimulator(
+    cirq.SimulatorBase[
+        SparseSimulatorStep, SparseSimulatorTrialResult, _SparseSimulationState
+    ]
+):
+    """Sparse simulator for a restricted set of Cirq operations.
+
+    Supports X, CNOT, CCNOT, numeric CZ powers, single-qubit unitaries,
+    SparseSimArithmeticGate, measurement, reset, and classical controls using
+    KeyCondition or SympyCondition. Other operations are tried by decomposition.
+
+    Allocate qubits through ``qubit_manager.qalloc`` before constructing circuits.
+    ``run(circuit, repetitions=n)`` executes independent shots starting in zero.
+    ``simulate`` and ``simulate_moment_steps`` expose final and intermediate
+    states, with integer initial states interpreted in Cirq's qubit order.
+    Nonempty parameter resolvers are not supported.
+
+    ``basis_states``, ``amplitudes``, and ``measurement_results`` describe the
+    latest shot. Register reads and measurement_results are little-endian;
+    Cirq state vectors and classical conditions use big-endian ordering.
+    ``read_register`` requires a single basis state, so measure first if needed.
+
+    For backwards compatibility, run also accepts circuits without measurements
+    and returns only the latest occurrence of each measurement key per shot.
+    """
+
+    def __init__(self, seed: int | None = None) -> None:
+        super().__init__(dtype=np.complex128, seed=seed, split_untangled_states=False)
+        self.random = random.Random(seed)
+        self._state = _SparseState(self.random)
+        self.qubit_manager = SparseSimQubitManager(self)
+
+    @property
+    def basis_states(self) -> list[int]:
+        return self._state.basis_states
+
+    @property
+    def amplitudes(self) -> list[complex]:
+        return self._state.amplitudes
+
+    @property
+    def measurement_results(self) -> dict[str, int]:
+        return self._state.measurement_results
+
+    def read_register(self, register: Sequence[cirq.Qid]) -> int:
+        """Read a little-endian register from the latest shot."""
+        return self._state.read_register(register)
+
+    def _is_qubit_zero(self, qid: int) -> bool:
+        return self._state._is_qubit_zero(qid)
+
+    def _create_partial_simulation_state(
+        self,
+        initial_state: Any,
+        qubits: Sequence[cirq.Qid],
+        classical_data: cirq.ClassicalDataStore,
+    ) -> _SparseSimulationState:
+        if not isinstance(initial_state, (int, np.integer)):
+            raise NotImplementedError("Only integer initial states are supported")
+        if not 0 <= initial_state < (1 << len(qubits)):
+            raise ValueError("initial_state is out of range for the supplied qubits")
+        basis = 0
+        for i, qubit in enumerate(qubits):
+            if (
+                not isinstance(qubit, cirq.LineQubit)
+                or not 0 <= qubit.x < self.qubit_manager.num_qubits
+                or qubit.x in self.qubit_manager.free_qubits_set
+            ):
+                raise ValueError("Circuit qubits must be allocated by qubit_manager")
+            basis |= ((int(initial_state) >> (len(qubits) - i - 1)) & 1) << qubit.x
+        state = _SparseState(self.random, classical_data)
+        state.basis_states = [basis]
+        state.qubit_manager._copy_allocation_from(self.qubit_manager)
+        self._state = state
+        return _SparseSimulationState(
+            state=state, qubits=qubits, classical_data=classical_data, prng=self._prng
+        )
+
+    def _create_step_result(
+        self, sim_state: cirq.SimulationStateBase[_SparseSimulationState]
+    ) -> SparseSimulatorStep:
+        self._state = sim_state.create_merged_state().sparse_state
+        self.qubit_manager._copy_allocation_from(self._state.qubit_manager)
+        return SparseSimulatorStep(sim_state.copy())
+
+    def _create_simulator_trial_result(
+        self,
+        params: cirq.ParamResolver,
+        measurements: dict[str, np.ndarray],
+        final_simulator_state: cirq.SimulationStateBase[_SparseSimulationState],
+    ) -> SparseSimulatorTrialResult:
+        return SparseSimulatorTrialResult(params, measurements, final_simulator_state)
+
+    def _can_be_in_run_prefix(self, val: Any) -> bool:
+        # Preserve per-shot execution and the original decomposition context.
+        return False
+
+    def _core_iterator(
+        self,
+        circuit: cirq.AbstractCircuit,
+        sim_state: cirq.SimulationStateBase[_SparseSimulationState],
+        all_measurements_are_terminal: bool = False,
+    ) -> Iterator[SparseSimulatorStep]:
+        state = sim_state.create_merged_state()
+        # Keep the engine's dispatch, including its supported classical controls.
+        for moment in circuit if len(circuit) else [cirq.Moment()]:
+            self._state = state.sparse_state
+            try:
+                for op in moment.operations:
+                    if all_measurements_are_terminal and cirq.is_measurement(op):
+                        continue
+                    state.apply_operation(op)
+            finally:
+                self.qubit_manager._copy_allocation_from(self._state.qubit_manager)
+            yield self._create_step_result(state)
+
+    @staticmethod
+    def _check_parameters(
+        param_resolver: cirq.ParamResolverOrSimilarType,
+    ) -> None:
+        if cirq.ParamResolver(param_resolver):
+            raise NotImplementedError("Parameter resolvers are not supported")
+
+    def simulate_moment_steps(
+        self,
+        circuit: cirq.AbstractCircuit,
+        param_resolver: cirq.ParamResolverOrSimilarType = None,
+        qubit_order: cirq.QubitOrderOrList = cirq.QubitOrder.DEFAULT,
+        initial_state: Any = None,
+    ) -> Iterator[SparseSimulatorStep]:
+        self._check_parameters(param_resolver)
+        return super().simulate_moment_steps(
+            circuit, param_resolver, qubit_order, initial_state
+        )
+
+    def simulate_sweep_iter(
+        self,
+        program: cirq.AbstractCircuit,
+        params: cirq.Sweepable,
+        qubit_order: cirq.QubitOrderOrList = cirq.QubitOrder.DEFAULT,
+        initial_state: Any = None,
+    ) -> Iterator[SparseSimulatorTrialResult]:
+        resolvers = list(cirq.to_resolvers(params))
+        for resolver in resolvers:
+            self._check_parameters(resolver)
+        return super().simulate_sweep_iter(
+            program, resolvers, qubit_order, initial_state
+        )
+
+    def run_sweep_iter(
+        self,
+        program: cirq.AbstractCircuit,
+        params: cirq.Sweepable,
+        repetitions: int = 1,
+    ) -> Iterator[cirq.Result]:
+        for resolver in cirq.to_resolvers(params):
+            yield cirq.ResultDict(
+                params=resolver,
+                records=self._run(program, resolver, repetitions),
+            )
+
+    def _run(
+        self,
+        circuit: cirq.AbstractCircuit,
+        param_resolver: cirq.ParamResolver,
+        repetitions: int,
+    ) -> dict[str, np.ndarray]:
+        self._check_parameters(param_resolver)
+        repetitions = operator.index(repetitions)
+        if repetitions < 0:
+            raise ValueError("repetitions must be non-negative")
+        if repetitions == 0:
+            operations = cirq.decompose(
+                circuit,
+                keep=lambda op: isinstance(op.gate, cirq.MeasurementGate)
+                or not cirq.is_measurement(op),
+            )
+            return {
+                cirq.measurement_key_name(op): np.empty(
+                    (0, 1, len(op.qubits)), dtype=np.bool_
+                )
+                for op in operations
+                if isinstance(op.gate, cirq.MeasurementGate)
+            }
+
+        records: dict[str, list[Sequence[int]]] = {}
+        qubits = tuple(sorted(circuit.all_qubits()))
+        for _ in range(repetitions):
+            for step in self._base_iterator(circuit, qubits, 0):
+                pass
+            for key, bits in step.measurements.items():
+                records.setdefault(key, []).append(bits)
+        return {
+            key: np.asarray(values, dtype=np.bool_)[:, np.newaxis, :]
+            for key, values in records.items()
+        }

@@ -1,4 +1,4 @@
-"""Tests for SparseSimulator's existing single-shot API."""
+"""Tests for sparse simulation, Cirq interfaces, and independent repetitions."""
 
 import itertools
 import math
@@ -1069,3 +1069,511 @@ def test_arithmetic_gate_rejects_wrong_output_register_count(
 
     with pytest.raises(AssertionError):
         simulator.run(cirq.Circuit(gate(*qubits)))
+
+
+@pytest.mark.parametrize("repetitions", [0, 1, 2, 17])
+def test_simulator_base_run_supports_repetitions(repetitions: int) -> None:
+    simulator = SparseSimulator(seed=1)
+    qubits = simulator.qubit_manager.qalloc(3)
+    circuit = cirq.Circuit(
+        cirq.X(qubits[0]),
+        cirq.measure(qubits[2], qubits[0], qubits[1], key="bits"),
+        cirq.measure(qubits[0], key="flag"),
+    )
+    assert isinstance(simulator, cirq.SimulatorBase)
+    sampler: cirq.Sampler = simulator
+
+    result = sampler.run(program=circuit, repetitions=repetitions)
+
+    assert result.params == cirq.ParamResolver({})
+    assert result.measurements["bits"].dtype == np.bool_
+    assert result.records["bits"].shape == (repetitions, 1, 3)
+    np.testing.assert_array_equal(
+        result.measurements["bits"], np.tile([0, 1, 0], (repetitions, 1))
+    )
+    np.testing.assert_array_equal(
+        result.measurements["flag"], np.ones((repetitions, 1), dtype=bool)
+    )
+    if repetitions:
+        assert simulator.read_register(qubits) == 1
+        assert simulator.measurement_results == {"bits": 2, "flag": 1}
+
+
+@pytest.mark.parametrize(
+    "kind", ["terminal", "mid-circuit", "reset", "arithmetic", "ancilla"]
+)
+def test_repetitions_match_successive_single_shots(kind: str) -> None:
+    batched = SparseSimulator(seed=3456)
+    sequential = SparseSimulator(seed=3456)
+    qubits = batched.qubit_manager.qalloc(3)
+    assert sequential.qubit_manager.qalloc(3) == qubits
+    circuit = cirq.Circuit(
+        cirq.ry(0.71)(qubits[0]), cirq.H(qubits[1]), cirq.CNOT(*qubits[1:])
+    )
+    if kind == "mid-circuit":
+        circuit += cirq.Circuit(
+            cirq.measure(qubits[0], key="control"),
+            cirq.X(qubits[2]).with_classical_controls("control"),
+            cirq.H(qubits[0]),
+        )
+    elif kind == "reset":
+        circuit += cirq.Circuit(cirq.reset(qubits[1]), cirq.H(qubits[2]))
+    elif kind == "arithmetic":
+        gate = SparseSimArithmeticGate([3], lambda value: ((value + 3) % 8,))
+        circuit += cirq.Circuit(gate(*qubits))
+    elif kind == "ancilla":
+        circuit += cirq.Circuit(_NestedPhaseGate()(qubits[0]))
+    circuit += cirq.measure(*qubits, key="m")
+    repetitions = 64
+    manager = batched.qubit_manager
+
+    result = batched.run(circuit, repetitions=repetitions)
+    individual = [sequential.run(circuit) for _ in range(repetitions)]
+
+    assert result.measurements.keys() == individual[0].measurements.keys()
+    for key in result.measurements:
+        np.testing.assert_array_equal(
+            result.measurements[key],
+            np.concatenate([shot.measurements[key] for shot in individual]),
+        )
+    assert batched.basis_states == sequential.basis_states
+    np.testing.assert_allclose(batched.amplitudes, sequential.amplitudes)
+    assert batched.measurement_results == sequential.measurement_results
+    assert len({tuple(row) for row in result.measurements["m"]}) > 1
+    assert batched.qubit_manager is manager
+    assert manager.num_allocated_qubits() == 3
+    assert manager.num_qubits == (4 if kind == "ancilla" else 3)
+
+
+def test_repetitions_preserve_entangled_measurement_correlations() -> None:
+    simulator = SparseSimulator(seed=5)
+    qubits = simulator.qubit_manager.qalloc(2)
+    circuit = cirq.Circuit(
+        cirq.H(qubits[0]),
+        cirq.CNOT(*qubits),
+        cirq.measure(qubits[0], key="a"),
+        cirq.measure(qubits[1], key="b"),
+    )
+
+    result = simulator.run(circuit, repetitions=100)
+
+    np.testing.assert_array_equal(result.measurements["a"], result.measurements["b"])
+    assert set(result.measurements["a"].ravel()) == {False, True}
+    assert simulator.read_register(qubits) == 3 * int(result.measurements["a"][-1, 0])
+
+
+def test_repetitions_clear_classical_history_between_shots() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(2)
+    first_measurement = cirq.KeyCondition(cirq.MeasurementKey("control"), index=0)
+    circuit = cirq.Circuit(
+        cirq.measure(qubits[0], key="control"),
+        cirq.X(qubits[0]),
+        cirq.measure(qubits[0], key="control"),
+        cirq.X(qubits[1]).with_classical_controls(first_measurement),
+        cirq.measure(qubits[1], key="target"),
+    )
+
+    result = simulator.run(circuit, repetitions=7)
+
+    np.testing.assert_array_equal(result.measurements["control"], np.ones((7, 1)))
+    np.testing.assert_array_equal(result.measurements["target"], np.zeros((7, 1)))
+    assert simulator.read_register(qubits) == 1
+
+
+def test_repetitions_retain_latest_repeated_key_even_when_width_changes() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(2)
+    circuit = cirq.Circuit(
+        cirq.measure(qubits[0], key="m"),
+        cirq.X(qubits[1]),
+        cirq.measure(*qubits, key="m"),
+    )
+
+    result = simulator.run(circuit, repetitions=5)
+
+    assert result.records["m"].shape == (5, 1, 2)
+    np.testing.assert_array_equal(result.measurements["m"], np.tile([0, 1], (5, 1)))
+
+
+def test_zero_repetitions_preserve_state_results_and_random_stream() -> None:
+    simulator = SparseSimulator(seed=5)
+    qubits = simulator.qubit_manager.qalloc(2)
+    simulator.run(cirq.Circuit(cirq.X(qubits[0]), cirq.measure(*qubits, key="old")))
+    random_state = simulator.random.getstate()
+    circuit = cirq.Circuit(
+        cirq.H(qubits[0]),
+        cirq.CircuitOperation(cirq.FrozenCircuit(cirq.measure(*qubits, key="new"))),
+    )
+
+    result = simulator.run(circuit, repetitions=0)
+
+    assert result.measurements["new"].shape == (0, 2)
+    assert simulator.basis_states == [1]
+    assert simulator.measurement_results == {"old": 1}
+    assert simulator.random.getstate() == random_state
+
+
+@pytest.mark.parametrize("repetitions", [1, 3])
+def test_repetitions_without_measurements_preserve_legacy_run(
+    repetitions: int,
+) -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+
+    result = simulator.run(cirq.Circuit(cirq.X(*qubits)), repetitions=repetitions)
+
+    assert result.measurements == {}
+    assert simulator.read_register(qubits) == 1
+
+
+@pytest.mark.parametrize("repetitions", [-1, -3])
+def test_negative_repetitions_are_rejected(repetitions: int) -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+
+    with pytest.raises(ValueError, match="repetitions"):
+        simulator.run(cirq.Circuit(cirq.measure(*qubits)), repetitions=repetitions)
+
+
+def test_parameterless_sweeps_use_repetitions() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+    circuit = cirq.Circuit(cirq.X(*qubits), cirq.measure(*qubits, key="m"))
+
+    results = simulator.run_sweep(circuit, params=[{}, {}], repetitions=4)
+
+    assert len(results) == 2
+    for result in results:
+        np.testing.assert_array_equal(result.measurements["m"], np.ones((4, 1)))
+
+
+@pytest.mark.parametrize("initial_state", [0, 1, 3, 5, np.int64(6)])
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_simulate_respects_qubit_order_and_integer_initial_state(
+    initial_state: int, reverse_order: bool
+) -> None:
+    simulator = SparseSimulator(seed=0)
+    allocated = simulator.qubit_manager.qalloc(6)
+    qubits = [allocated[4], allocated[0], allocated[2]]
+    order = qubits[::-1] if reverse_order else qubits
+    circuit = cirq.Circuit(
+        cirq.ry(0.4)(qubits[0]), cirq.CNOT(qubits[0], qubits[1]), cirq.T(qubits[2])
+    )
+
+    actual = simulator.simulate(circuit, qubit_order=order, initial_state=initial_state)
+    expected = cirq.Simulator(dtype=np.complex128).simulate(
+        circuit, qubit_order=order, initial_state=int(initial_state)
+    )
+
+    assert isinstance(actual, cirq.SimulationTrialResultBase)
+    assert actual.params == cirq.ParamResolver({})
+    assert actual.measurements == {}
+    assert actual.qubit_map == {q: i for i, q in enumerate(order)}
+    np.testing.assert_allclose(actual.final_state_vector, expected.final_state_vector)
+    np.testing.assert_allclose(
+        actual.final_state_vector, _state_vector(simulator, order)
+    )
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_simulate_random_circuits_matches_dense_simulator(seed: int) -> None:
+    simulator = SparseSimulator(seed=seed)
+    qubits = simulator.qubit_manager.qalloc(4)
+    circuit = cirq.testing.random_circuit(
+        qubits, n_moments=20, op_density=0.8, random_state=seed
+    )
+
+    result = simulator.simulate(circuit, qubit_order=qubits)
+    expected = cirq.Simulator(dtype=np.complex128).simulate(circuit, qubit_order=qubits)
+
+    np.testing.assert_allclose(
+        result.final_state_vector, expected.final_state_vector, atol=1e-8
+    )
+
+
+def test_simulate_measurements_and_final_state_are_independent_snapshots() -> None:
+    simulator = SparseSimulator(seed=1)
+    qubits = simulator.qubit_manager.qalloc(2)
+    result = simulator.simulate(
+        cirq.Circuit(
+            cirq.H(qubits[0]),
+            cirq.CNOT(*qubits),
+            cirq.measure(*qubits, key="m"),
+        )
+    )
+    measured = result.measurements["m"].copy()
+    state_vector = result.final_state_vector.copy()
+
+    simulator.run(cirq.Circuit(cirq.X(qubits[0])), repetitions=2)
+
+    assert measured.shape == (2,)
+    assert measured[0] == measured[1]
+    np.testing.assert_array_equal(result.measurements["m"], measured)
+    np.testing.assert_allclose(result.final_state_vector, state_vector)
+    np.testing.assert_allclose(state_vector, np.eye(4)[3 * measured[0]])
+
+
+def test_moment_steps_match_dense_states_and_do_not_alias() -> None:
+    simulator = SparseSimulator(seed=0)
+    qubits = simulator.qubit_manager.qalloc(2)
+    circuit = cirq.Circuit(
+        cirq.Moment(cirq.H(qubits[0])),
+        cirq.Moment(cirq.T(qubits[0])),
+        cirq.Moment(cirq.CNOT(*qubits)),
+        cirq.Moment(cirq.measure(qubits[0], key="m")),
+    )
+
+    steps = list(simulator.simulate_moment_steps(circuit, qubit_order=qubits))
+
+    assert len(steps) == len(circuit)
+    assert all(isinstance(step, cirq.StepResultBase) for step in steps)
+    for i in range(3):
+        expected = cirq.Simulator(dtype=np.complex128).simulate(
+            circuit[: i + 1], qubit_order=qubits
+        )
+        assert steps[i].measurements == {}
+        np.testing.assert_allclose(steps[i].state_vector(), expected.final_state_vector)
+    bit = steps[-1].measurements["m"][0]
+    expected_final = np.eye(4, dtype=np.complex128)[3 * bit]
+    expected_final *= np.exp(1j * np.pi * bit / 4)
+    np.testing.assert_allclose(steps[-1].state_vector(), expected_final)
+    first_vector = steps[0].state_vector()
+    first_vector[:] = 0
+    assert np.linalg.norm(steps[0].state_vector()) == pytest.approx(1)
+
+
+@pytest.mark.parametrize("repetitions", [0, 1, 50])
+def test_step_sampling_is_seeded_and_does_not_collapse_state(repetitions: int) -> None:
+    simulator = SparseSimulator(seed=0)
+    qubits = simulator.qubit_manager.qalloc(3)
+    circuit = cirq.Circuit(
+        cirq.X(qubits[2]), cirq.H(qubits[0]), cirq.CNOT(*qubits[:2])
+    )
+    step = list(simulator.simulate_moment_steps(circuit))[-1]
+    before = step.state_vector()
+    random_state = simulator.random.getstate()
+
+    samples = step.sample([qubits[2], qubits[1], qubits[0]], repetitions, seed=42)
+
+    assert samples.shape == (repetitions, 3)
+    np.testing.assert_array_equal(samples[:, 0], np.ones(repetitions))
+    np.testing.assert_array_equal(samples[:, 1], samples[:, 2])
+    np.testing.assert_array_equal(
+        samples, step.sample([qubits[2], qubits[1], qubits[0]], repetitions, seed=42)
+    )
+    np.testing.assert_allclose(step.state_vector(), before)
+    assert step.measurements == {}
+    assert simulator.random.getstate() == random_state
+    assert step.sample([], repetitions, seed=42).shape == (repetitions, 0)
+    with pytest.raises(ValueError, match="repetitions"):
+        step.sample(qubits, repetitions=-1)
+
+
+def test_simulation_state_copy_is_independent_and_supports_act_on() -> None:
+    simulator = SparseSimulator(seed=0)
+    qubits = simulator.qubit_manager.qalloc(2)
+    result = simulator.simulate(
+        cirq.Circuit(cirq.H(qubits[0]), cirq.measure(qubits[1], key="old"))
+    )
+    state = result.get_state_containing_qubit(qubits[0])
+    copied = state.copy(deep_copy_buffers=False)
+    before = state.state_vector()
+
+    cirq.act_on(cirq.X(qubits[1]), copied)
+    cirq.act_on(cirq.measure(qubits[1], key="new"), copied)
+
+    assert copied.classical_data.get_int(cirq.MeasurementKey("new")) == 1
+    assert copied.classical_data.records[cirq.MeasurementKey("new")] == [(1,)]
+    assert state.classical_data.keys() == (cirq.MeasurementKey("old"),)
+    assert copied.classical_data.channel_records == {}
+    assert state.sparse_state.qubit_manager is not copied.sparse_state.qubit_manager
+    np.testing.assert_allclose(state.state_vector(), before)
+    np.testing.assert_allclose(result.final_state_vector, before)
+    cirq.act_on(cirq.X, copied, qubits=[qubits[1]])
+    np.testing.assert_allclose(copied.state_vector(), before)
+    with pytest.raises(ValueError, match="not in this simulation state"):
+        cirq.act_on(cirq.X(cirq.LineQubit(100)), copied)
+    with pytest.raises(TypeError, match="Failed to act"):
+        cirq.act_on(object(), copied, qubits=qubits)
+
+
+def test_empty_simulation_and_moment_steps_return_initial_state() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(2)
+
+    result = simulator.simulate(cirq.Circuit(), qubit_order=qubits, initial_state=2)
+    steps = list(
+        simulator.simulate_moment_steps(
+            cirq.Circuit(), qubit_order=qubits, initial_state=2
+        )
+    )
+
+    assert len(steps) == 1
+    assert result.measurements == {}
+    assert steps[0].measurements == {}
+    np.testing.assert_array_equal(result.final_state_vector, [0, 0, 1, 0])
+    np.testing.assert_array_equal(steps[0].state_vector(), result.final_state_vector)
+
+
+def test_simulate_keeps_large_register_sparse_until_vector_is_requested() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(128)
+
+    result = simulator.simulate(
+        cirq.Circuit(cirq.X(qubits[127])), qubit_order=qubits
+    )
+
+    state = result.get_state_containing_qubit(qubits[127]).sparse_state
+    assert state.basis_states == [1 << 127]
+    assert state.amplitudes == [1]
+    assert simulator.read_register(qubits) == 1 << 127
+
+
+@pytest.mark.parametrize("method", ["run", "simulate", "simulate_moment_steps"])
+@pytest.mark.parametrize("resolver", [None, {}, cirq.ParamResolver({})])
+def test_empty_parameter_resolvers_are_accepted(method: str, resolver) -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+    circuit = cirq.Circuit(cirq.X(*qubits), cirq.measure(*qubits, key="m"))
+
+    result = getattr(simulator, method)(circuit, param_resolver=resolver)
+    if method == "simulate_moment_steps":
+        result = list(result)[-1]
+
+    assert np.all(result.measurements["m"])
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["run", "simulate", "simulate_moment_steps", "run_sweep", "simulate_sweep"],
+)
+@pytest.mark.parametrize(
+    "resolver", [{"theta": 0.5}, cirq.ParamResolver({"theta": 0.5})]
+)
+def test_nonempty_parameter_resolvers_are_rejected(method: str, resolver) -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+    circuit = cirq.Circuit(
+        (cirq.X ** sympy.Symbol("theta"))(*qubits),
+        cirq.measure(*qubits, key="m"),
+    )
+    parameter = "params" if "sweep" in method else "param_resolver"
+
+    with pytest.raises(NotImplementedError, match="Parameter resolvers"):
+        result = getattr(simulator, method)(circuit, **{parameter: resolver})
+        if method == "simulate_moment_steps":
+            list(result)
+
+
+@pytest.mark.parametrize("initial_state", [-1, 4])
+def test_out_of_range_initial_states_are_rejected(initial_state: int) -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(2)
+
+    with pytest.raises(ValueError, match="initial_state"):
+        simulator.simulate(
+            cirq.Circuit(), qubit_order=qubits, initial_state=initial_state
+        )
+
+
+def test_dense_initial_states_are_explicitly_unsupported() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+
+    with pytest.raises(NotImplementedError, match="integer initial states"):
+        simulator.simulate(
+            cirq.Circuit(), qubit_order=qubits, initial_state=np.array([1, 0])
+        )
+
+
+def test_failed_decomposition_keeps_public_allocator_in_sync() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+
+    with pytest.raises(RuntimeError, match="did not free all allocated qubits"):
+        simulator.run(
+            cirq.Circuit(cirq.X(*qubits), _AncillaPhaseGate(release=False)(*qubits))
+        )
+
+    assert simulator.qubit_manager.num_allocated_qubits() == 2
+    assert simulator.qubit_manager.qalloc(1) == [cirq.LineQubit(2)]
+
+
+def test_parameterless_simulation_sweep_has_independent_results() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+    circuit = cirq.Circuit(cirq.X(*qubits), cirq.measure(*qubits, key="m"))
+
+    results = simulator.simulate_sweep(circuit, params=[{}, {}])
+
+    assert len(results) == 2
+    for result in results:
+        np.testing.assert_array_equal(result.measurements["m"], [1])
+        np.testing.assert_allclose(result.final_state_vector, [0, 1])
+    assert (
+        results[0].get_state_containing_qubit(qubits[0])
+        is not results[1].get_state_containing_qubit(qubits[0])
+    )
+
+
+def test_simulation_can_continue_from_returned_state() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+    first = simulator.simulate(cirq.Circuit(cirq.H(*qubits)))
+    state = first.get_state_containing_qubit(qubits[0])
+
+    second = simulator.simulate(
+        cirq.Circuit(cirq.H(*qubits)), initial_state=state.copy()
+    )
+
+    np.testing.assert_allclose(second.final_state_vector, [1, 0], atol=1e-12)
+    np.testing.assert_allclose(first.final_state_vector, [2**-0.5, 2**-0.5])
+
+
+def test_unallocated_circuit_qubits_are_rejected() -> None:
+    simulator = SparseSimulator()
+    simulator.qubit_manager.qalloc(1)
+
+    with pytest.raises(ValueError, match="allocated by qubit_manager"):
+        simulator.run(cirq.Circuit(cirq.X(cirq.LineQubit(1))))
+
+
+def test_partial_simulation_state_preserves_supplied_classical_data() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(2)
+    data = cirq.ClassicalDataDictionaryStore()
+    key = cirq.MeasurementKey("control")
+    data.record_measurement(key, [0, 1], qubits)
+    state = simulator._create_partial_simulation_state(0, qubits, data)
+
+    cirq.act_on(cirq.X(qubits[0]).with_classical_controls(str(key)), state)
+
+    assert isinstance(state, cirq.SimulationState)
+    assert state.classical_data.get_int(key) == 1
+    assert state.classical_data.get_digits(key) == (0, 1)
+    assert state.sparse_state.measurement_results["control"] == 2
+    np.testing.assert_allclose(state.state_vector(), [0, 0, 1, 0])
+
+
+def test_partial_state_rejects_unsupported_channel_records() -> None:
+    simulator = SparseSimulator()
+    data = cirq.ClassicalDataDictionaryStore()
+    data.record_channel_measurement(cirq.MeasurementKey("channel"), 1)
+
+    with pytest.raises(NotImplementedError, match="Channel measurement"):
+        simulator._create_partial_simulation_state(0, (), data)
+
+
+@pytest.mark.parametrize("method", ["run", "simulate"])
+def test_rejected_parameters_do_not_clear_previous_state(method: str) -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(1)
+    circuit = cirq.Circuit(cirq.X(*qubits), cirq.measure(*qubits, key="m"))
+    simulator.run(circuit)
+
+    with pytest.raises(NotImplementedError, match="Parameter resolvers"):
+        getattr(simulator, method)(circuit, param_resolver={"unused": 1})
+
+    assert simulator.basis_states == [1]
+    assert simulator.measurement_results == {"m": 1}
