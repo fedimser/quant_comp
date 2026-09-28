@@ -45,6 +45,13 @@ def _prepare_basis(
     return [cirq.X(q) for i, q in enumerate(qubits) if (value >> i) & 1]
 
 
+def _random_state_snapshot(
+    random_state: np.random.RandomState,
+) -> tuple[str, bytes, int, int, float]:
+    algorithm, keys, position, has_gauss, cached_gaussian = random_state.get_state()
+    return algorithm, keys.tobytes(), position, has_gauss, cached_gaussian
+
+
 def _assert_matches_dense(
     simulator: SparseSimulator,
     circuit: cirq.Circuit,
@@ -1079,8 +1086,6 @@ class _UnsupportedGate(cirq.Gate):
     "gate",
     [
         _UnsupportedGate(),
-        cirq.depolarize(0.1),
-        cirq.amplitude_damp(0.1),
     ],
     ids=repr,
 )
@@ -1090,6 +1095,110 @@ def test_unsupported_operations_raise_value_error(gate: cirq.Gate) -> None:
 
     with pytest.raises(ValueError, match="Operation cannot be simulated"):
         simulator.run(cirq.Circuit(gate(*qubits)))
+
+
+@pytest.mark.parametrize(
+    "channel, initial, expected_one_probability",
+    [
+        (cirq.bit_flip(0.25), 0, 0.25),
+        (
+            cirq.asymmetric_depolarize(p_x=0.1, p_y=0.2, p_z=0.3),
+            0,
+            0.3,
+        ),
+        (cirq.depolarize(0.3), 0, 0.2),
+        (cirq.amplitude_damp(0.3), 1, 0.7),
+        (cirq.generalized_amplitude_damp(p=0.7, gamma=0.4), 1, 0.72),
+    ],
+    ids=repr,
+)
+def test_common_channels_follow_expected_basis_state_statistics(
+    channel: cirq.Gate, initial: int, expected_one_probability: float
+) -> None:
+    simulator = SparseSimulator(seed=1234)
+    qubits = simulator.qubit_manager.qalloc(1)
+    result = simulator.run(
+        cirq.Circuit(
+            _prepare_basis(qubits, initial),
+            channel(*qubits),
+            cirq.measure(*qubits, key="m"),
+        ),
+        repetitions=400,
+    )
+
+    assert np.mean(result.measurements["m"]) == pytest.approx(
+        expected_one_probability, abs=0.08
+    )
+
+
+def test_phase_flip_trajectory_has_expected_x_statistics() -> None:
+    probability = 0.25
+    simulator = SparseSimulator(seed=1234)
+    qubits = simulator.qubit_manager.qalloc(1)
+    result = simulator.run(
+        cirq.Circuit(
+            cirq.H(*qubits),
+            cirq.phase_flip(probability)(*qubits),
+            cirq.H(*qubits),
+            cirq.measure(*qubits, key="m"),
+        ),
+        repetitions=400,
+    )
+
+    assert np.mean(result.measurements["m"]) == pytest.approx(probability, abs=0.08)
+
+
+def test_phase_damping_trajectory_has_expected_x_statistics() -> None:
+    gamma = 0.36
+    simulator = SparseSimulator(seed=1234)
+    qubits = simulator.qubit_manager.qalloc(1)
+    result = simulator.run(
+        cirq.Circuit(
+            cirq.H(*qubits),
+            cirq.phase_damp(gamma)(*qubits),
+            cirq.H(*qubits),
+            cirq.measure(*qubits, key="m"),
+        ),
+        repetitions=400,
+    )
+
+    expected_one_probability = (1 - math.sqrt(1 - gamma)) / 2
+    assert np.mean(result.measurements["m"]) == pytest.approx(
+        expected_one_probability, abs=0.08
+    )
+
+
+def test_multiqubit_depolarizing_channel_uses_cirq_qubit_order() -> None:
+    simulator = SparseSimulator(seed=1234)
+    qubits = simulator.qubit_manager.qalloc(2)
+    result = simulator.run(
+        cirq.Circuit(
+            cirq.depolarize(1.0, n_qubits=2)(*qubits),
+            cirq.measure(*qubits, key="m"),
+        ),
+        repetitions=600,
+    )
+
+    outcomes = np.array(
+        [cirq.big_endian_bits_to_int(bits) for bits in result.measurements["m"]]
+    )
+    frequencies = np.bincount(outcomes, minlength=4) / len(outcomes)
+    np.testing.assert_allclose(frequencies, [3 / 15, 4 / 15, 4 / 15, 4 / 15], atol=0.08)
+
+
+def test_channel_trajectories_are_seeded() -> None:
+    circuit = cirq.Circuit(
+        cirq.H(cirq.LineQubit(0)),
+        cirq.amplitude_damp(0.4)(cirq.LineQubit(0)),
+        cirq.measure(cirq.LineQubit(0), key="m"),
+    )
+
+    results = [
+        SparseSimulator(seed=123).run(circuit, repetitions=100).measurements["m"]
+        for _ in range(2)
+    ]
+
+    np.testing.assert_array_equal(results[0], results[1])
 
 
 def test_unsupported_classical_condition_raises_value_error() -> None:
@@ -1262,7 +1371,7 @@ def test_zero_repetitions_preserve_state_results_and_random_stream() -> None:
     simulator = SparseSimulator(seed=5)
     qubits = simulator.qubit_manager.qalloc(2)
     simulator.run(cirq.Circuit(cirq.X(qubits[0]), cirq.measure(*qubits, key="old")))
-    random_state = simulator.random.getstate()
+    random_state = _random_state_snapshot(simulator.random)
     circuit = cirq.Circuit(
         cirq.H(qubits[0]),
         cirq.CircuitOperation(cirq.FrozenCircuit(cirq.measure(*qubits, key="new"))),
@@ -1273,7 +1382,7 @@ def test_zero_repetitions_preserve_state_results_and_random_stream() -> None:
     assert result.measurements["new"].shape == (0, 2)
     assert simulator.basis_states == [1]
     assert simulator.measurement_results == {"old": 1}
-    assert simulator.random.getstate() == random_state
+    assert _random_state_snapshot(simulator.random) == random_state
 
 
 @pytest.mark.parametrize("repetitions", [1, 3])
@@ -1414,7 +1523,7 @@ def test_step_sampling_is_seeded_and_does_not_collapse_state(repetitions: int) -
     )
     step = list(simulator.simulate_moment_steps(circuit))[-1]
     before = step.state_vector()
-    random_state = simulator.random.getstate()
+    random_state = _random_state_snapshot(simulator.random)
 
     samples = step.sample([qubits[2], qubits[1], qubits[0]], repetitions, seed=42)
 
@@ -1426,7 +1535,7 @@ def test_step_sampling_is_seeded_and_does_not_collapse_state(repetitions: int) -
     )
     np.testing.assert_allclose(step.state_vector(), before)
     assert step.measurements == {}
-    assert simulator.random.getstate() == random_state
+    assert _random_state_snapshot(simulator.random) == random_state
     assert step.sample([], repetitions, seed=42).shape == (repetitions, 0)
     with pytest.raises(ValueError, match="repetitions"):
         step.sample(qubits, repetitions=-1)

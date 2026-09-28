@@ -21,7 +21,6 @@ from __future__ import annotations
 import copy
 import math
 import operator
-import random
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from types import NotImplementedType
 from typing import Any, Self
@@ -170,11 +169,11 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
 
     def __init__(
         self,
-        random_source: random.Random,
+        random_source: np.random.RandomState,
         qubits: Sequence[cirq.Qid] = (),
         classical_data: cirq.ClassicalDataStoreReader | None = None,
     ) -> None:
-        self.random: random.Random | np.random.RandomState = random_source
+        self.random = random_source
         self.axis_by_qubit = {qubit: axis for axis, qubit in enumerate(qubits)}
         self._next_axis = len(qubits)
         self._free_axes: list[int] = []
@@ -283,29 +282,103 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
         matrix = cirq.unitary(op_gate, default=None)
         assert matrix is not None
         assert matrix.shape == (2, 2)
+        states, amplitudes = self._apply_matrix(matrix, [qubit_id])
+        self._set_normalized_state(states, amplitudes)
 
+    def _apply_matrix(
+        self, matrix: np.ndarray, qubit_ids: Sequence[int]
+    ) -> tuple[list[int], list[complex]]:
+        """Apply a local matrix without normalizing or mutating this state."""
+        dimension = 1 << len(qubit_ids)
+        matrix = np.asarray(matrix)
+        if matrix.shape != (dimension, dimension):
+            raise ValueError(
+                f"Matrix shape {matrix.shape} does not match "
+                f"{len(qubit_ids)} target qubits"
+            )
+
+        target_mask = sum(1 << qubit_id for qubit_id in qubit_ids)
+        nonzero_outputs: dict[int, np.ndarray] = {}
         merged_amplitudes: dict[int, complex] = {}
         for state, amplitude in zip(self.basis_states, self.amplitudes, strict=True):
-            input_bit = (state >> qubit_id) & 1
-            for output_bit in (0, 1):
-                coeff = matrix[output_bit, input_bit]
-                if coeff == 0:
-                    continue
-                new_state = (
-                    state if output_bit == input_bit else state ^ (1 << qubit_id)
-                )
+            input_index = 0
+            for qubit_id in qubit_ids:
+                input_index = (input_index << 1) | ((state >> qubit_id) & 1)
+            base_state = state & ~target_mask
+
+            outputs = nonzero_outputs.get(input_index)
+            if outputs is None:
+                outputs = np.flatnonzero(matrix[:, input_index])
+                nonzero_outputs[input_index] = outputs
+            for output_index in outputs:
+                new_state = base_state
+                for position, qubit_id in enumerate(qubit_ids):
+                    output_bit = (
+                        int(output_index) >> (len(qubit_ids) - position - 1)
+                    ) & 1
+                    new_state |= output_bit << qubit_id
+                coeff = matrix[output_index, input_index]
                 merged_amplitudes[new_state] = (
                     merged_amplitudes.get(new_state, 0.0 + 0.0j) + amplitude * coeff
                 )
 
+        states = list(merged_amplitudes)
+        amplitudes = list(merged_amplitudes.values())
+        return states, amplitudes
+
+    def _set_normalized_state(
+        self, states: Sequence[int], amplitudes: Sequence[complex]
+    ) -> None:
+        """Update sparse state to given states and amplitudes, normalized."""
+        norm = math.sqrt(sum(abs(amplitude) ** 2 for amplitude in amplitudes))
+        if not math.isfinite(norm) or norm <= 0:
+            raise ValueError("Selected channel branch has zero or invalid probability")
+
         kept_states = [
-            (state, amplitude)
-            for state, amplitude in merged_amplitudes.items()
-            if abs(amplitude) >= _AMPLITUDE_EPS
+            (state, amplitude / norm)
+            for state, amplitude in zip(states, amplitudes, strict=True)
+            if abs(amplitude / norm) >= _AMPLITUDE_EPS
         ]
         assert len(kept_states) > 0
         self.basis_states = [state for state, _ in kept_states]
         self.amplitudes = _normalize([amplitude for _, amplitude in kept_states])
+
+    def _random_choice(self, probs: list[float]) -> int:
+        """Sample an index from the given probability distribution."""
+        # NumPy rejects empty, negative, non-finite, and non-normalized probabilities.
+        return int(self.random.choice(len(probs), p=probs))
+
+    def _apply_mixture(
+        self,
+        mixture: Sequence[tuple[float, np.ndarray]],
+        qubit_ids: Sequence[int],
+    ) -> None:
+        """Sample and apply one unitary from a state-independent mixture."""
+        probabilities = [float(probability) for probability, _ in mixture]
+        index = int(self._random_choice(probabilities))
+        selected_matrix = mixture[index][1]
+
+        states, amplitudes = self._apply_matrix(np.asarray(selected_matrix), qubit_ids)
+        self._set_normalized_state(states, amplitudes)
+
+    def _apply_kraus(
+        self, kraus_operators: Sequence[np.ndarray], qubit_ids: Sequence[int]
+    ) -> None:
+        """Sample and normalize one state-dependent Kraus trajectory branch."""
+        if not kraus_operators:
+            raise ValueError("A channel must provide at least one Kraus operator")
+
+        branches = [
+            self._apply_matrix(np.asarray(matrix), qubit_ids)
+            for matrix in kraus_operators
+        ]
+        # Each branch probability is the squared norm of K_i |psi>.
+        probabilities = [
+            sum(abs(amplitude) ** 2 for amplitude in amplitudes)
+            for _, amplitudes in branches
+        ]
+        index = self._random_choice(probabilities)
+        self._set_normalized_state(*branches[index])
 
     def _measure_qubit(self, target_qubit: int) -> int:
         """Measure one qubit and collapse sparse state according to Born rule.
@@ -431,13 +504,27 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
             return
 
         # Prefer explicit unitaries to decompositions introducing unsupported gates.
-        if (
-            op_gate is not None
-            and len(qubit_ids) == 1
-            and cirq.has_unitary(op_gate, allow_decompose=False)
-        ):
+        protocol_target = op_gate if op_gate is not None else op
+        has_unitary = cirq.has_unitary(protocol_target, allow_decompose=False)
+        if op_gate is not None and len(qubit_ids) == 1 and has_unitary:
             self._apply_single_qubit_unitary_gate(op_gate, qubit_ids[0])
             return
+
+        if not has_unitary:
+            mixture = cirq.mixture(protocol_target, default=None)
+            if mixture is not None:
+                self._apply_mixture(mixture, qubit_ids)
+                return
+
+            kraus_getter = getattr(protocol_target, "_kraus_", None)
+            if kraus_getter is not None:
+                kraus_operators = kraus_getter()
+                if (
+                    kraus_operators is not None
+                    and kraus_operators is not NotImplemented
+                ):
+                    self._apply_kraus(tuple(kraus_operators), qubit_ids)
+                    return
 
         num_alloc_before = self.qubit_manager.num_allocated_qubits()
         decomposed = cirq.decompose_once(
@@ -460,8 +547,7 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
         s = self.basis_states[0]
         try:
             return sum(
-                ((s >> self.axis_by_qubit[q]) & 1) << i
-                for i, q in enumerate(register)
+                ((s >> self.axis_by_qubit[q]) & 1) << i for i, q in enumerate(register)
             )
         except KeyError as ex:
             raise ValueError(
@@ -638,7 +724,7 @@ class SparseSimulator(
 
     def __init__(self, seed: int | None = None) -> None:
         super().__init__(dtype=np.complex128, seed=seed, split_untangled_states=False)
-        self.random = random.Random(seed)
+        self.random = np.random.RandomState(seed)
         self._state = _SparseState(self.random)
         self.qubit_manager = SparseSimQubitManager(self)
 
@@ -806,4 +892,6 @@ class SparseSimulator(
                 pass
             for key, values in step._classical_data.records.items():
                 records.setdefault(str(key), []).append(values)
-        return {key: np.asarray(values, dtype=np.bool_) for key, values in records.items()}
+        return {
+            key: np.asarray(values, dtype=np.bool_) for key, values in records.items()
+        }

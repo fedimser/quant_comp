@@ -5,8 +5,9 @@ This is a simple implementation of a Sparse simulator for circuits in Cirq.
 It is sparse in a sense that it maintains a list of basis states with only 
 non-zero amplitudes.
 
-It supports unitary gates and computational basis measurments, and designed 
-primarily for simulating arithmetic circuits.
+It supports unitary gates, computational basis measurements, and noisy channels,
+and is designed primarily for simulating arithmetic circuits. Mixture and Kraus
+channels are simulated as stochastic pure-state trajectories.
 
 I was not able to find such a simulator in Cirq (maybe I didn't look had 
 enough), so I just wrote this one for my needs.
