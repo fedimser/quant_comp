@@ -451,21 +451,26 @@ def test_measurement_keys_and_result_interface(
     np.testing.assert_array_equal(_state_vector(simulator, qubits), np.eye(8)[4])
 
 
-def test_repeated_measurement_key_retains_latest_value() -> None:
+def test_repeated_measurement_key_retains_all_occurrences() -> None:
     simulator = SparseSimulator()
     qubits = simulator.qubit_manager.qalloc(2)
     result = simulator.run(
         cirq.Circuit(
             cirq.X(qubits[0]),
-            cirq.measure(qubits[0], key="m"),
+            cirq.measure(*qubits, key="m"),
             cirq.X(qubits[0]),
             cirq.X(qubits[1]),
             cirq.measure(*qubits, key="m"),
-        )
+        ),
+        repetitions=2,
     )
 
     assert simulator.measurement_results == {"m": 2}
-    np.testing.assert_array_equal(result.measurements["m"], [[0, 1]])
+    np.testing.assert_array_equal(
+        result.records["m"], [[[1, 0], [0, 1]], [[1, 0], [0, 1]]]
+    )
+    with pytest.raises(ValueError, match="repeated keys"):
+        _ = result.measurements
     assert simulator.read_register(qubits) == 2
 
 
@@ -621,7 +626,7 @@ def test_key_condition_index_selects_measurement_occurrence(
         )
     )
 
-    np.testing.assert_array_equal(result.measurements["target"], [[expected]])
+    np.testing.assert_array_equal(result.records["target"], [[[expected]]])
     assert simulator.read_register(qubits) == 1 + 2 * expected
 
 
@@ -1174,12 +1179,14 @@ def test_repetitions_clear_classical_history_between_shots() -> None:
 
     result = simulator.run(circuit, repetitions=7)
 
-    np.testing.assert_array_equal(result.measurements["control"], np.ones((7, 1)))
-    np.testing.assert_array_equal(result.measurements["target"], np.zeros((7, 1)))
+    np.testing.assert_array_equal(
+        result.records["control"], np.tile([[[0], [1]]], (7, 1, 1))
+    )
+    np.testing.assert_array_equal(result.records["target"], np.zeros((7, 1, 1)))
     assert simulator.read_register(qubits) == 1
 
 
-def test_repetitions_retain_latest_repeated_key_even_when_width_changes() -> None:
+def test_repeated_measurement_key_rejects_different_widths() -> None:
     simulator = SparseSimulator()
     qubits = simulator.qubit_manager.qalloc(2)
     circuit = cirq.Circuit(
@@ -1188,10 +1195,8 @@ def test_repetitions_retain_latest_repeated_key_even_when_width_changes() -> Non
         cirq.measure(*qubits, key="m"),
     )
 
-    result = simulator.run(circuit, repetitions=5)
-
-    assert result.records["m"].shape == (5, 1, 2)
-    np.testing.assert_array_equal(result.measurements["m"], np.tile([0, 1], (5, 1)))
+    with pytest.raises(ValueError, match="Different qid shapes"):
+        simulator.run(circuit, repetitions=5)
 
 
 def test_zero_repetitions_preserve_state_results_and_random_stream() -> None:

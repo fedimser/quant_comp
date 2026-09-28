@@ -570,8 +570,7 @@ class SparseSimulator(
     Cirq state vectors and classical conditions use big-endian ordering.
     ``read_register`` requires a single basis state, so measure first if needed.
 
-    For backwards compatibility, run also accepts circuits without measurements
-    and returns only the latest occurrence of each measurement key per shot.
+    Accepts circuits without measurements.
     """
 
     def __init__(self, seed: int | None = None) -> None:
@@ -701,28 +700,33 @@ class SparseSimulator(
         repetitions = operator.index(repetitions)
         if repetitions < 0:
             raise ValueError("repetitions must be non-negative")
-        if repetitions == 0:
-            operations = cirq.decompose(
-                circuit,
-                keep=lambda op: isinstance(op.gate, cirq.MeasurementGate)
-                or not cirq.is_measurement(op),
-            )
-            return {
-                cirq.measurement_key_name(op): np.empty(
-                    (0, 1, len(op.qubits)), dtype=np.bool_
+        operations = cirq.decompose(
+            circuit,
+            keep=lambda op: isinstance(op.gate, cirq.MeasurementGate)
+            or not cirq.is_measurement(op),
+        )
+        measurement_widths: dict[str, list[int]] = {}
+        for op in operations:
+            if isinstance(op.gate, cirq.MeasurementGate):
+                key = cirq.measurement_key_name(op)
+                measurement_widths.setdefault(key, []).append(len(op.qubits))
+        for key, widths in measurement_widths.items():
+            if len(set(widths)) != 1:
+                raise ValueError(
+                    f"Different qid shapes for repeated measurement: key={key!r}"
                 )
-                for op in operations
-                if isinstance(op.gate, cirq.MeasurementGate)
+
+        if repetitions == 0:
+            return {
+                key: np.empty((0, len(widths), widths[0]), dtype=np.bool_)
+                for key, widths in measurement_widths.items()
             }
 
-        records: dict[str, list[Sequence[int]]] = {}
+        records: dict[str, list[Sequence[Sequence[int]]]] = {}
         qubits = tuple(sorted(circuit.all_qubits()))
         for _ in range(repetitions):
             for step in self._base_iterator(circuit, qubits, 0):
                 pass
-            for key, bits in step.measurements.items():
-                records.setdefault(key, []).append(bits)
-        return {
-            key: np.asarray(values, dtype=np.bool_)[:, np.newaxis, :]
-            for key, values in records.items()
-        }
+            for key, values in step._classical_data.records.items():
+                records.setdefault(str(key), []).append(values)
+        return {key: np.asarray(values, dtype=np.bool_) for key, values in records.items()}
