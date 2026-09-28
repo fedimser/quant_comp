@@ -16,10 +16,7 @@ def _state_vector(
     simulator: SparseSimulator, qubit_order: Sequence[cirq.Qid]
 ) -> np.ndarray:
     """Convert little-endian sparse indices to Cirq's specified tensor order."""
-    qubit_ids = []
-    for qubit in qubit_order:
-        assert isinstance(qubit, cirq.LineQubit)
-        qubit_ids.append(qubit.x)
+    qubit_ids = [simulator._state.axis_by_qubit[qubit] for qubit in qubit_order]
 
     assert len(simulator.basis_states) == len(simulator.amplitudes)
     assert len(set(simulator.basis_states)) == len(simulator.basis_states)
@@ -899,6 +896,34 @@ def test_recursive_decomposition_allocates_uncomputes_and_reuses_ancilla() -> No
     assert simulator.qubit_manager.qalloc(1) == [cirq.LineQubit(1)]
 
 
+def test_recursive_decomposition_supports_external_qubits() -> None:
+    simulator = SparseSimulator()
+    qubit = cirq.NamedQubit("external")
+    circuit = cirq.Circuit(
+        cirq.H(qubit),
+        _NestedPhaseGate()(qubit),
+        _NestedPhaseGate()(qubit),
+        cirq.H(qubit),
+        cirq.measure(qubit, key="m"),
+    )
+
+    result = simulator.run(circuit)
+
+    np.testing.assert_array_equal(result.measurements["m"], [[0]])
+    assert simulator._state.axis_by_qubit == {qubit: 0}
+    assert simulator.qubit_manager.num_allocated_qubits() == 0
+
+
+def test_internal_ancilla_does_not_alias_external_line_qubit() -> None:
+    simulator = SparseSimulator()
+    qubit = cirq.LineQubit(0)
+
+    simulator.run(cirq.Circuit(_NestedPhaseGate()(qubit)))
+
+    assert simulator._state.axis_by_qubit == {qubit: 0}
+    assert simulator.qubit_manager.qalloc(1) == [cirq.LineQubit(1)]
+
+
 def test_tagged_and_circuit_operations() -> None:
     simulator = SparseSimulator()
     qubits = simulator.qubit_manager.qalloc(2)
@@ -1530,12 +1555,39 @@ def test_simulation_can_continue_from_returned_state() -> None:
     np.testing.assert_allclose(first.final_state_vector, [2**-0.5, 2**-0.5])
 
 
-def test_unallocated_circuit_qubits_are_rejected() -> None:
+@pytest.mark.parametrize(
+    "qubits",
+    [
+        cirq.NamedQubit.range(2, prefix="q"),
+        [cirq.GridQubit(4, 7), cirq.GridQubit(-2, 10)],
+        [cirq.LineQubit(100), cirq.LineQubit(10_000)],
+    ],
+)
+def test_arbitrary_circuit_qubits_use_compact_axes(
+    qubits: Sequence[cirq.Qid],
+) -> None:
     simulator = SparseSimulator()
-    simulator.qubit_manager.qalloc(1)
+    circuit = cirq.Circuit(
+        cirq.X(qubits[0]),
+        cirq.CNOT(*qubits),
+        cirq.measure(*qubits, key="m"),
+    )
 
-    with pytest.raises(ValueError, match="allocated by qubit_manager"):
-        simulator.run(cirq.Circuit(cirq.X(cirq.LineQubit(1))))
+    result = simulator.run(circuit)
+
+    np.testing.assert_array_equal(result.measurements["m"], [[1, 1]])
+    assert simulator._state.axis_by_qubit == {
+        qubit: axis for axis, qubit in enumerate(sorted(qubits))
+    }
+    assert simulator.basis_states == [3]
+
+
+def test_nonbinary_circuit_qubits_are_rejected() -> None:
+    simulator = SparseSimulator()
+    qubit = cirq.NamedQid("qutrit", dimension=3)
+
+    with pytest.raises(ValueError, match="dimension-2"):
+        simulator.run(cirq.Circuit(cirq.XPowGate(dimension=3)(qubit)))
 
 
 def test_partial_simulation_state_preserves_supplied_classical_data() -> None:

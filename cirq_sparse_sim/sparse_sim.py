@@ -60,7 +60,7 @@ class SparseSimArithmeticGate(cirq.Gate):
 
 
 class SparseSimQubitManager(cirq.QubitManager):
-    """Simple qubit manager with allocation/release over ``LineQubit`` indices."""
+    """Qubit manager used for legacy allocation and decomposition ancillas."""
 
     def __init__(self, simulator: SparseSimulator | _SparseState) -> None:
         """Initialize the simulator."""
@@ -70,18 +70,30 @@ class SparseSimQubitManager(cirq.QubitManager):
         self.free_qubits_set: set[int] = set()
 
     def _allocate_qubit(self) -> cirq.LineQubit:
-        if len(self.free_qubits) == 0:
+        for index in range(len(self.free_qubits) - 1, -1, -1):
+            qubit_id = self.free_qubits[index]
+            qubit = cirq.LineQubit(qubit_id)
+            if not self.simulator._has_qubit(qubit):
+                del self.free_qubits[index]
+                self.free_qubits_set.remove(qubit_id)
+                return qubit
+
+        while True:
             qubit_id = self.num_qubits
             self.num_qubits += 1
-        else:
-            qubit_id = self.free_qubits.pop()
-            self.free_qubits_set.remove(qubit_id)
-        return cirq.LineQubit(qubit_id)
+            qubit = cirq.LineQubit(qubit_id)
+            if not self.simulator._has_qubit(qubit):
+                return qubit
+            self.free_qubits.append(qubit_id)
+            self.free_qubits_set.add(qubit_id)
 
     def qalloc(self, n: int, dim: int = 2) -> list[cirq.Qid]:
         """Allocate qubits."""
         assert dim == 2
-        return [self._allocate_qubit() for _ in range(n)]
+        qubits = [self._allocate_qubit() for _ in range(n)]
+        for qubit in qubits:
+            self.simulator._add_qubit(qubit)
+        return qubits
 
     def qborrow(self, n: int, dim: int = 2) -> list[cirq.Qid]:
         """Not implemented."""
@@ -94,14 +106,20 @@ class SparseSimQubitManager(cirq.QubitManager):
             assert 0 <= q.x < self.num_qubits
             if q.x in self.free_qubits_set:
                 raise RuntimeError(f"Qubit {q.x} released twice")
-            if not self.simulator._is_qubit_zero(q.x):
+            if not self.simulator._is_qubit_zero(q):
                 raise RuntimeError(f"Qubit {q.x} released not in zero state")
+            self.simulator._remove_qubit(q)
             self.free_qubits.append(q.x)
             self.free_qubits_set.add(q.x)
 
     def num_allocated_qubits(self) -> int:
         """Returns number of allocated qubits."""
         return self.num_qubits - len(self.free_qubits)
+
+    def allocated_qubits(self) -> Iterator[cirq.LineQubit]:
+        for qubit_id in range(self.num_qubits):
+            if qubit_id not in self.free_qubits_set:
+                yield cirq.LineQubit(qubit_id)
 
     def _copy_allocation_from(self, other: SparseSimQubitManager) -> None:
         self.num_qubits = other.num_qubits
@@ -138,9 +156,13 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
     def __init__(
         self,
         random_source: random.Random,
+        qubits: Sequence[cirq.Qid] = (),
         classical_data: cirq.ClassicalDataStoreReader | None = None,
     ) -> None:
         self.random: random.Random | np.random.RandomState = random_source
+        self.axis_by_qubit = {qubit: axis for axis, qubit in enumerate(qubits)}
+        self._next_axis = len(qubits)
+        self._free_axes: list[int] = []
         self.qubit_manager = SparseSimQubitManager(self)
 
         # Sparse state is represented by a list of basis states with
@@ -171,6 +193,20 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
                     self.measurement_results[name] = sum(
                         bit << i for i, bit in enumerate(records[-1])
                     )
+
+    def _has_qubit(self, qubit: cirq.Qid) -> bool:
+        return qubit in self.axis_by_qubit
+
+    def _add_qubit(self, qubit: cirq.Qid) -> None:
+        if qubit in self.axis_by_qubit:
+            raise RuntimeError(f"Qubit {qubit} is already in the simulation state")
+        axis = self._free_axes.pop() if self._free_axes else self._next_axis
+        if axis == self._next_axis:
+            self._next_axis += 1
+        self.axis_by_qubit[qubit] = axis
+
+    def _remove_qubit(self, qubit: cirq.Qid) -> None:
+        self._free_axes.append(self.axis_by_qubit.pop(qubit))
 
     def _apply_x(self, qid: int) -> None:
         self.basis_states = [s ^ (1 << qid) for s in self.basis_states]
@@ -350,7 +386,7 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
             return
 
         op_gate = op.gate
-        qubit_ids = [q.x for q in op.qubits]
+        qubit_ids = [self.axis_by_qubit[q] for q in op.qubits]
 
         if isinstance(op_gate, cirq.XPowGate) and op_gate.exponent == 1:
             self._apply_x(qubit_ids[0])
@@ -407,11 +443,20 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
             len(self.basis_states) == 1
         ), "Final state is superposition, add measurements."
         s = self.basis_states[0]
-        return sum(((s >> q.x) & 1) << i for i, q in enumerate(register))
+        try:
+            return sum(
+                ((s >> self.axis_by_qubit[q]) & 1) << i
+                for i, q in enumerate(register)
+            )
+        except KeyError as ex:
+            raise ValueError(
+                f"Qubit {ex.args[0]} is not in this simulation state"
+            ) from ex
 
-    def _is_qubit_zero(self, qid: int) -> bool:
+    def _is_qubit_zero(self, qubit: cirq.Qid) -> bool:
         """Checks whether qubit is in 0 state."""
-        return all((s >> qid) & 1 == 0 for s in self.basis_states)
+        axis = self.axis_by_qubit.get(qubit)
+        return axis is None or all((s >> axis) & 1 == 0 for s in self.basis_states)
 
     def copy(self, deep_copy_buffers: bool = True) -> Self:
         """Copy the state; there are no reusable scratch buffers to share."""
@@ -424,6 +469,9 @@ class _SparseState(cirq.QuantumStateRepresentation, cirq.ClassicalDataStoreReade
         }
         result._meas_len = self._meas_len.copy()
         result._records = {key: values.copy() for key, values in self._records.items()}
+        result.axis_by_qubit = self.axis_by_qubit.copy()
+        result._next_axis = self._next_axis
+        result._free_axes = self._free_axes.copy()
         result.qubit_manager = SparseSimQubitManager(result)
         result.qubit_manager._copy_allocation_from(self.qubit_manager)
         return result
@@ -476,14 +524,12 @@ class _SparseSimulationState(cirq.SimulationState[_SparseState]):
         return self._state
 
     def get_axes(self, qubits: Sequence[cirq.Qid]) -> list[int]:
-        axes = []
-        for qubit in qubits:
-            if qubit not in self.qubit_map:
-                raise ValueError(f"Qubit {qubit} is not in this simulation state")
-            if not isinstance(qubit, cirq.LineQubit):
-                raise ValueError("Only LineQubits are supported")
-            axes.append(qubit.x)
-        return axes
+        try:
+            return [self._state.axis_by_qubit[qubit] for qubit in qubits]
+        except KeyError as ex:
+            raise ValueError(
+                f"Qubit {ex.args[0]} is not in this simulation state"
+            ) from ex
 
     def apply_operation(self, op: cirq.Operation) -> None:
         self.get_axes(op.qubits)
@@ -560,7 +606,6 @@ class SparseSimulator(
     SparseSimArithmeticGate, measurement, reset, and classical controls using
     KeyCondition or SympyCondition. Other operations are tried by decomposition.
 
-    Allocate qubits through ``qubit_manager.qalloc`` before constructing circuits.
     ``run(circuit, repetitions=n)`` executes independent shots starting in zero.
     ``simulate`` and ``simulate_moment_steps`` expose final and intermediate
     states, with integer initial states interpreted in Cirq's qubit order.
@@ -595,8 +640,17 @@ class SparseSimulator(
         """Read a little-endian register from the latest shot."""
         return self._state.read_register(register)
 
-    def _is_qubit_zero(self, qid: int) -> bool:
-        return self._state._is_qubit_zero(qid)
+    def _has_qubit(self, qubit: cirq.Qid) -> bool:
+        return self._state._has_qubit(qubit)
+
+    def _add_qubit(self, qubit: cirq.Qid) -> None:
+        self._state._add_qubit(qubit)
+
+    def _remove_qubit(self, qubit: cirq.Qid) -> None:
+        self._state._remove_qubit(qubit)
+
+    def _is_qubit_zero(self, qubit: cirq.Qid) -> bool:
+        return self._state._is_qubit_zero(qubit)
 
     def _create_partial_simulation_state(
         self,
@@ -608,16 +662,21 @@ class SparseSimulator(
             raise NotImplementedError("Only integer initial states are supported")
         if not 0 <= initial_state < (1 << len(qubits)):
             raise ValueError("initial_state is out of range for the supplied qubits")
+        for qubit in qubits:
+            if qubit.dimension != 2:
+                raise ValueError("Only dimension-2 qubits are supported")
+        state_qubits = list(qubits)
+        circuit_qubits = set(qubits)
+        state_qubits.extend(
+            qubit
+            for qubit in self.qubit_manager.allocated_qubits()
+            if qubit not in circuit_qubits
+        )
+        state = _SparseState(self.random, state_qubits, classical_data)
         basis = 0
         for i, qubit in enumerate(qubits):
-            if (
-                not isinstance(qubit, cirq.LineQubit)
-                or not 0 <= qubit.x < self.qubit_manager.num_qubits
-                or qubit.x in self.qubit_manager.free_qubits_set
-            ):
-                raise ValueError("Circuit qubits must be allocated by qubit_manager")
-            basis |= ((int(initial_state) >> (len(qubits) - i - 1)) & 1) << qubit.x
-        state = _SparseState(self.random, classical_data)
+            axis = state.axis_by_qubit[qubit]
+            basis |= ((int(initial_state) >> (len(qubits) - i - 1)) & 1) << axis
         state.basis_states = [basis]
         state.qubit_manager._copy_allocation_from(self.qubit_manager)
         self._state = state
