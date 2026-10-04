@@ -1,12 +1,29 @@
 import cirq
 import numpy as np
+import pytest
 
-from error_correction.stabilizer_codes import FIVE_QUBIT_PERFECT_CODE
+from error_correction.stabilizer_codes import FIVE_QUBIT_PERFECT_CODE, StabilizerSet
 
 
 def test_five_qubit_perfect_code():
     code = FIVE_QUBIT_PERFECT_CODE
     assert code.signature() == "[[5,1,3]]"
+
+
+def test_stabilizer_set_rejects_noncommuting_generators():
+    with pytest.raises(
+        ValueError,
+        match=r"Stabilizer generators 'XI' and 'ZI' must commute",
+    ):
+        StabilizerSet(["XI", "ZI"])
+
+
+def test_stabilizer_set_rejects_dependent_generators():
+    with pytest.raises(
+        ValueError,
+        match="Stabilizer generators must be independent",
+    ):
+        StabilizerSet(["XX", "XX"])
 
 
 def test_five_qubit_perfect_code_corrects_single_qubit_errors():

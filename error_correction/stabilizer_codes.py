@@ -102,7 +102,7 @@ class StabilizerSet:
             [self._to_binary(stabilizer) for stabilizer in normalized],
             dtype=np.uint8,
         )
-        self._validate_generators()
+        self._validate_generators(normalized)
 
         self.stabilizers = [
             PauliString(
@@ -124,7 +124,7 @@ class StabilizerSet:
             vector[self.n + i] = pauli in "ZY"
         return vector
 
-    def _validate_generators(self):
+    def _validate_generators(self, stabilizers: list[str]) -> None:
         _, pivots = _gf2_rref(self.binary_stabilizers)
         if len(pivots) != self.n_st:
             raise ValueError("Stabilizer generators must be independent")
@@ -133,7 +133,10 @@ class StabilizerSet:
                 if _symplectic_product(
                     self.binary_stabilizers[i], self.binary_stabilizers[j]
                 ):
-                    raise ValueError("Stabilizer generators must commute")
+                    raise ValueError(
+                        f"Stabilizer generators {stabilizers[j]!r} and "
+                        f"{stabilizers[i]!r} must commute"
+                    )
 
     def _prepare_encoding_circuit(self) -> list[cirq.Operation]:
         stabilizers = self.binary_stabilizers
