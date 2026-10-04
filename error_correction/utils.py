@@ -28,13 +28,15 @@ def test_protocol_once(protocol: QecProtocol, channel: cirq.Gate, output=None):
     ct.append([cirq.ry(theta).on(q_init), cirq.rz(phi).on(q_init)])
 
     # Encode.
-    encoded_qubits = protocol.encode(ct, q_init)
+    encoded_qubits = protocol.encode(ct, [q_init])
 
     # Transmit.
     transmitted_qubits = [channel.transmit(ct, q) for q in encoded_qubits]
 
     # Decode.
-    decoded_qubit = protocol.decode(ct, transmitted_qubits)
+    decoded_qubits = protocol.decode(ct, transmitted_qubits)
+    assert len(decoded_qubits) == 1
+    decoded_qubit = decoded_qubits[0]
 
     # Simulate cirquit to get final state of decoded qubit.
     sim = SparseSimulator()
@@ -54,7 +56,9 @@ def test_protocol_once(protocol: QecProtocol, channel: cirq.Gate, output=None):
 
 
 # Experimentally calculates failure rate of error correcting protocol.
-def test_protocol(protocol: QecProtocol, channel: cirq.Gate, num_experiments=100):
+def test_protocol(
+    protocol: QecProtocol, channel: cirq.Gate, num_experiments=100
+) -> float:
     ok_count = sum(
         [test_protocol_once(protocol, channel) for _ in range(num_experiments)]
     )
@@ -86,3 +90,7 @@ def plot_errors(
     plt.grid()
     plt.show()
     print(f"Time: {time.time() - time_start:.2f}s")
+
+
+test_protocol_once.__test__ = False
+test_protocol.__test__ = False
