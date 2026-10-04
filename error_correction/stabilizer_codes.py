@@ -360,6 +360,7 @@ FIVE_QUBIT_PERFECT_CODE = StabilizerCode(
     ["XZZXI", "IXZZX", "XIXZZ", "ZXIXZ"],
 )
 
+# https://errorcorrectionzoo.org/c/shor_nine
 SHOR_CODE = StabilizerCode(
     9,
     1,
@@ -373,5 +374,37 @@ SHOR_CODE = StabilizerCode(
         "IIIIIIIZZ",
         "XXXXXXIII",
         "IIIXXXXXX",
+    ],
+)
+
+# https://errorcorrectionzoo.org/c/steane
+STEANE_CODE = StabilizerCode(
+    7,
+    1,
+    3,
+    [
+        "IIIXXXX",
+        "IXXIIXX",
+        "XIXIXIX",
+        "IIIZZZZ",
+        "IZZIIZZ",
+        "ZIZIZIZ",
+    ],
+)
+
+# https://errorcorrectionzoo.org/c/surface-17?utm_source=chatgpt.com
+SURFACE_17_CODE = StabilizerCode(
+    9,
+    1,
+    3,
+    [
+        "IXIIIIIXI",
+        "IIIXXIIII",
+        "IIXIIXXXI",
+        "XIIXIXIIX",
+        "ZIIIIIIIZ",
+        "IIZIIIZII",
+        "IIIZZZZII",
+        "IZIIIZIZZ",
     ],
 )
