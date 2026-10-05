@@ -10,14 +10,14 @@ from .channels import BitFlipChannel
 from .protocols import QecProtocol
 
 
-# Transmits random qubit using given channel and protocol and returns if transmission was successful.
-# If output is passed, writes there circuit.
+# Transmits a random qubit using the given channel and protocol and returns if transmission was successful.
+# If output is passed, writes the circuit there.
 def test_protocol_once(protocol: QecProtocol, channel: cirq.Gate, output=None):
     # Generate qubit (in Bloch sphere notation).
     theta = np.random.rand() * np.pi
     phi = np.random.rand() * 2 * np.pi
 
-    # Coordinates on Bloch sphere (for asserion in the end of experiment).
+    # Coordinates on the Bloch sphere (for assertion at the end of the experiment).
     init_bloch_coords = np.array(
         [np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta)]
     )
@@ -38,13 +38,13 @@ def test_protocol_once(protocol: QecProtocol, channel: cirq.Gate, output=None):
     assert len(decoded_qubits) == 1
     decoded_qubit = decoded_qubits[0]
 
-    # Simulate cirquit to get final state of decoded qubit.
+    # Simulate the circuit to get the final state of the decoded qubit.
     sim = SparseSimulator()
     sim.simulate(ct)
     result = sim.simulate(ct)
     result_bloch_coords = result.bloch_vector_of(decoded_qubit)
 
-    # Protocol should ensurre that decoded_qubit is not entangled with other qubits.
+    # Protocol should ensure that decoded_qubit is not entangled with other qubits.
     if not np.allclose(np.linalg.norm(result_bloch_coords), 1.0):
         raise ValueError("Not pure state %s" % result_bloch_coords)
 
@@ -55,7 +55,7 @@ def test_protocol_once(protocol: QecProtocol, channel: cirq.Gate, output=None):
     return np.linalg.norm(result_bloch_coords - init_bloch_coords) < 1e-5
 
 
-# Experimentally calculates failure rate of error correcting protocol.
+# Experimentally calculates the failure rate of an error-correcting protocol.
 def test_protocol(
     protocol: QecProtocol, channel: cirq.Gate, num_experiments=100
 ) -> float:

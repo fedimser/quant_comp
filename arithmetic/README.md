@@ -1,6 +1,6 @@
-## Quantum Artihmetic
+## Quantum Arithmetic
 
-In this folder I put some helper code for implementing various quantum arithmetic algorihtms.
+In this folder I put some helper code for implementing various quantum arithmetic algorithms.
 I use this code to test the classical algorithms before implementing them in Q#.
 
 This is part of the project on resource estimation for quantum arithmetic.

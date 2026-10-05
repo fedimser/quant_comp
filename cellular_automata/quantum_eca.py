@@ -141,7 +141,7 @@ def circuit_for_eca(ca: ECA, qubits):
         for i in range(n - 1):
             circuit += cirq.CNOT(qubits[i + 1], qubits[i])
     elif ca.rule == 90:
-        # This rule replaces cell with XOR of its left and right neigbors.
+        # This rule replaces the cell with the XOR of its left and right neighbors.
         assert n % 2 == 0, "Rule requires even n."
         assert ca.bord_cond == BorderCondition.FIXED, "Rule requires fixed border condition."
         for i in range(n - 3, -1, -1):

@@ -9,7 +9,7 @@ It supports unitary gates, computational basis measurements, and noisy channels,
 and is designed primarily for simulating arithmetic circuits. Mixture and Kraus
 channels are simulated as stochastic pure-state trajectories.
 
-I was not able to find such a simulator in Cirq (maybe I didn't look had 
+I was not able to find such a simulator in Cirq (maybe I didn't look hard
 enough), so I just wrote this one for my needs.
 
 AI was used while writing this simulator.

@@ -33,7 +33,7 @@ def _test_decomposition_with(U, m, dec):
 
     gates = dec.decompose(U, qubits[:-1], qubits[-1])
 
-    # Verify that all gates are either CNOT 1-qubit gates.
+    # Verify that all gates are either CNOT or 1-qubit gates.
     for gate in gates:
         _validate_matrix(gate._unitary_(), dec.allow_toffoli)
 

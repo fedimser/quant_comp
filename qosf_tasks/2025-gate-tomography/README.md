@@ -2,7 +2,7 @@
 
 *Dmytro Fedoriaka, October 2025.*
 
-This is my solution to a screening task of cohort 11 of the [Quantum Open Source Foundation](https://qosf.org/) Mentoship Program.
+This is my solution to a screening task of cohort 11 of the [Quantum Open Source Foundation](https://qosf.org/) Mentorship Program.
 
 I chose Task 1, \"Gate Tomography\".
 
