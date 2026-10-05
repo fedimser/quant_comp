@@ -84,4 +84,4 @@ def test_steane_code():
 
 def test_surface_17_code():
     code = SURFACE_17_CODE
-    assert code.signature() == "[[9,1,3]]" 
+    assert code.signature() == "[[9,1,3]]"
