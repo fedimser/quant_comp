@@ -694,6 +694,35 @@ class SparseSimulatorTrialResult(
 ):
     """Final sparse simulation state, materialized as a vector only on request."""
 
+    def bloch_vector_of(self, qubit: cirq.Qid) -> np.ndarray:
+        """Return the Bloch vector of a qubit in the final state."""
+        state = self._get_merged_sim_state()
+        qubit_index = self.qubit_map[qubit]
+        sparse_state = state.sparse_state
+        axis = sparse_state.axis_by_qubit[state.qubits[qubit_index]]
+        bit = 1 << axis
+        amplitudes = dict(
+            zip(
+                sparse_state.basis_states,
+                sparse_state.amplitudes,
+                strict=True,
+            )
+        )
+
+        z = 0.0
+        coherence = 0.0j
+        for basis, amplitude in amplitudes.items():
+            probability = abs(amplitude) ** 2
+            if basis & bit:
+                z -= probability
+            else:
+                z += probability
+                coherence += amplitude * np.conj(amplitudes.get(basis | bit, 0.0j))
+
+        return np.array(
+            [2 * coherence.real, -2 * coherence.imag, z], dtype=np.float32
+        )
+
     @property
     def final_state_vector(self) -> np.ndarray:
         return self._get_merged_sim_state().state_vector()

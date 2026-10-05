@@ -1463,6 +1463,49 @@ def test_simulate_random_circuits_matches_dense_simulator(seed: int) -> None:
     )
 
 
+def test_simulation_result_bloch_vectors_match_dense_simulator() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(3)
+    circuit = cirq.Circuit(
+        cirq.ry(0.7)(qubits[0]),
+        cirq.rz(-1.2)(qubits[0]),
+        cirq.H(qubits[1]),
+        cirq.CNOT(qubits[1], qubits[2]),
+    )
+    order = [qubits[2], qubits[0], qubits[1]]
+
+    actual = simulator.simulate(circuit, qubit_order=order)
+    expected = cirq.Simulator(dtype=np.complex128).simulate(
+        circuit, qubit_order=order
+    )
+
+    for qubit in qubits:
+        assert actual.bloch_vector_of(qubit).dtype == np.float32
+        np.testing.assert_allclose(
+            actual.bloch_vector_of(qubit),
+            expected.bloch_vector_of(qubit),
+            rtol=0,
+            atol=1e-7,
+        )
+    with pytest.raises(KeyError):
+        actual.bloch_vector_of(cirq.NamedQubit("missing"))
+
+
+def test_simulation_result_bloch_vector_stays_sparse() -> None:
+    simulator = SparseSimulator()
+    qubits = simulator.qubit_manager.qalloc(128)
+    result = simulator.simulate(
+        cirq.Circuit(cirq.X(qubits[-1])), qubit_order=qubits
+    )
+
+    np.testing.assert_array_equal(
+        result.bloch_vector_of(qubits[0]), np.array([0, 0, 1], dtype=np.float32)
+    )
+    np.testing.assert_array_equal(
+        result.bloch_vector_of(qubits[-1]), np.array([0, 0, -1], dtype=np.float32)
+    )
+
+
 def test_simulate_measurements_and_final_state_are_independent_snapshots() -> None:
     simulator = SparseSimulator(seed=1)
     qubits = simulator.qubit_manager.qalloc(2)

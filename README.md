@@ -5,7 +5,7 @@ This repository contains my various exercises and research projects in the field
 List of projects:
 * Exercises with Cirq:
   * [Phase estimation](Phase%20estimation.ipynb) (2019)
-  * [Error correction](Quantum%20error%20correction%20with%20Cirq.ipynb) (2019)
+  * [Error correction](error_correction/) (2019, upd. in 2026)
 * Linear algebra:
   * [Schmidt decomposition of a vector](Schmidt%20decomposition%20of%20a%20vector.ipynb) (2019)
   * [Schmidt decomposition of a 4x4 matrix](Schmidt%20decomposition%20of%204x4%20matrix.ipynb) (2019)
