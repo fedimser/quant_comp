@@ -1,4 +1,3 @@
-import numpy as np
 import cirq
 
 from cirq import Circuit, Qid
@@ -87,7 +86,7 @@ class ThreeQubitPhaseFlipProtocol(QecProtocol):
             circuit.append(cirq.H(q))
         return qubits
 
-    def decode(self, circuit, qubits: list[Qid]) ->list[Qid]:
+    def decode(self, circuit, qubits: list[Qid]) -> list[Qid]:
         for q in qubits:
             circuit.append(cirq.H(q))
         return self.bf_protocol.decode(circuit, qubits)
